@@ -1,12 +1,13 @@
 
-http://gchauras.github.io/blog/
-http://gchauras.github.io/cv/
-http://gchauras.github.io/feed.xml
-http://gchauras.github.io/
-http://gchauras.github.io/css/main.css
-http://gchauras.github.io/misc/
-http://gchauras.github.io/research/
-http://gchauras.github.io/sitemap.txt
+http://hailongding.github.io/blog/
+http://hailongding.github.io/cv/
+http://hailongding.github.io/feed.xml
+http://hailongding.github.io/
+http://hailongding.github.io/css/main.css
+http://hailongding.github.io/misc/
+http://hailongding.github.io/research/
+http://hailongding.github.io/sitemap.txt
 
-http://gchauras.github.io/blog/2016/08/01/How-to-fix-memory-fragmentation
-http://gchauras.github.io/blog/2016/02/08/Chewbaca-is-talking-in-his-sleep
+http://hailongding.github.io/blog/2016/08/03/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board
+http://hailongding.github.io/blog/2016/08/02/Avoid-memory-leak-using-shared_ptr
+http://hailongding.github.io/blog/2016/08/01/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc

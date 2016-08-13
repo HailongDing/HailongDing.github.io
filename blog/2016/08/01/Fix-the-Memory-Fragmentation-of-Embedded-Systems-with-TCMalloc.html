@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Ding Hailong :: Fix the Memory Fragmentation of Embedded Systems with TCMalloc</title>
+    <meta name="description" content="While developing a video processing device, we met an eccentric phenomenon- the amount of memory used by our program kept on growing. After several weeks of ...">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://hailongding.github.io/blog/2016/08/01/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc">
+    <link rel="alternate" type="application/rss+xml" title="Ding Hailong" href="http://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Ding Hailong</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+    
+    
+     <li><a href="/blog/" class="page-link">Blog</a>
+    
+    </li>
+    
+    
+     <li><a href="/misc/" class="page-link">Misc</a>
+    
+    </li>
+    
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Fix the Memory Fragmentation of Embedded Systems with TCMalloc</h1>
+    <p class="post-meta">Posted on August 1, 2016  ()</p>
+
+    
+
+    
+    <p class="post-meta">Categories:
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="memory fragmentation">memory fragmentation</a>&nbsp; -->
+    memory fragmentation&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="embedded">embedded</a>&nbsp; -->
+    embedded&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="tcmalloc">tcmalloc</a>&nbsp; -->
+    tcmalloc&nbsp;
+    
+
+    </p>
+    
+    </header>
+
+    <p>While developing a video processing device, we met an eccentric phenomenon- the amount of memory used by our program kept on growing. After several weeks of running, the program triggered the OOM(Out of Memory) condition, and was killed by the Linux Operating System. At first I doubted that there might be a memory leak. So I checked every calls about malloc() and free(), but found no problem. I then used detect tools such as valgrind, but got the same result. So I decided to dig into the GNU C library’s (glibc’s) malloc library, to find out any improperly use of the it.</p>
+
+<p>In the source code I read, “Also, in practice, programs tend to have runs of either small or large requests, but less often mixtures, so consolidation is not invoked all that often in most programs. And the programs that it is called frequently in otherwise tend to fragment. ” It also mentioned that for long-lived programs, special attention should be paid to the trim threshold and the mmap control parameters.</p>
+
+<p>The memory using style of our program didn’t conform to those rules. It’s mixed with small and large requests, and created many objects reserved for a long time. After some searching, I found that many people have met the similar problem, and they used other libraries to deal with it.</p>
+
+<p>There are some third party memory manage libraries, such as: tcmalloc, jemalloc, hoard, lockless, etc. Two of them are very famous because Google used tcmalloc and Facebook used jemalloc. I chose tcmalloc for our project, because they said it’s “The fastest malloc we’ve seen; works particularly well with threads and STL”. However, we still met the memory growing problem. After some deep study, I found we can use “MallocExtension::instance()-&gt;ReleaseFreeMemory()” frequently to keep the memory stable. Till this time of the day, our devices have been running continuously for over two years.</p>
+
+<p>Third parties’ implementation emphasize fragmentation avoidance, and also have higher performance. The following program gives a good example. It will take 1177 seconds and 308 seconds by using glibc 2.15 and tcmalloc 1.8.2 separately.</p>
+
+<figure class="highlight"><pre><code class="language-cpp" data-lang="cpp"><table style="border-spacing: 0"><tbody><tr><td class="gutter gl" style="text-align: right"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66</pre></td><td class="code"><pre><span class="cp">#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;string.h&gt;
+#include &lt;time.h&gt;
+</span> 
+<span class="cp">#define MAX_OBJECT_NUMBER       (1024)
+#define MAX_MEMORY_SIZE         (1024*100)
+</span> 
+<span class="k">struct</span> <span class="n">BufferUnit</span><span class="p">{</span>
+   <span class="kt">int</span>   <span class="n">size</span><span class="p">;</span>
+   <span class="kt">char</span><span class="o">*</span> <span class="n">data</span><span class="p">;</span>
+<span class="p">};</span>
+ 
+<span class="k">struct</span> <span class="n">BufferUnit</span>   <span class="n">buffer_units</span><span class="p">[</span><span class="n">MAX_OBJECT_NUMBER</span><span class="p">];</span>
+ 
+<span class="kt">void</span> <span class="nf">MallocBuffer</span><span class="p">(</span><span class="kt">int</span> <span class="n">buffer_size</span><span class="p">)</span> <span class="p">{</span>
+ 
+<span class="k">for</span><span class="p">(</span><span class="kt">int</span> <span class="n">i</span><span class="o">=</span><span class="mi">0</span><span class="p">;</span> <span class="n">i</span><span class="o">&lt;</span><span class="n">MAX_OBJECT_NUMBER</span><span class="p">;</span> <span class="o">++</span><span class="n">i</span><span class="p">)</span>  <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nb">NULL</span> <span class="o">!=</span> <span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">data</span><span class="p">)</span>   <span class="k">continue</span><span class="p">;</span>
+ 
+    <span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">data</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span><span class="o">*</span><span class="p">)</span><span class="n">malloc</span><span class="p">(</span><span class="n">buffer_size</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nb">NULL</span> <span class="o">==</span> <span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">data</span><span class="p">)</span>  <span class="k">continue</span><span class="p">;</span>
+ 
+    <span class="n">memset</span><span class="p">(</span><span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">data</span><span class="p">,</span> <span class="mh">0x01</span><span class="p">,</span> <span class="n">buffer_size</span><span class="p">);</span>
+    <span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">size</span> <span class="o">=</span> <span class="n">buffer_size</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+ 
+<span class="kt">void</span> <span class="nf">FreeHalfBuffer</span><span class="p">(</span><span class="kt">bool</span> <span class="n">left_half_flag</span><span class="p">)</span> <span class="p">{</span>
+    <span class="kt">int</span> <span class="n">half_index</span> <span class="o">=</span> <span class="n">MAX_OBJECT_NUMBER</span> <span class="o">/</span> <span class="mi">2</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">min_index</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">max_index</span> <span class="o">=</span> <span class="n">MAX_OBJECT_NUMBER</span><span class="o">-</span><span class="mi">1</span><span class="p">;</span>
+    <span class="k">if</span>  <span class="p">(</span><span class="n">left_half_flag</span><span class="p">)</span>
+        <span class="n">max_index</span> <span class="o">=</span>  <span class="n">half_index</span><span class="p">;</span>
+    <span class="k">else</span>
+        <span class="n">min_index</span> <span class="o">=</span> <span class="n">half_index</span><span class="p">;</span>
+ 
+    <span class="k">for</span><span class="p">(</span><span class="kt">int</span> <span class="n">i</span><span class="o">=</span><span class="n">min_index</span><span class="p">;</span> <span class="n">i</span><span class="o">&lt;=</span><span class="n">max_index</span><span class="p">;</span> <span class="o">++</span><span class="n">i</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">NULL</span> <span class="o">==</span> <span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">data</span><span class="p">)</span> <span class="k">continue</span><span class="p">;</span>
+ 
+        <span class="n">free</span><span class="p">(</span><span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">data</span><span class="p">);</span>
+        <span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">data</span> <span class="o">=</span>  <span class="nb">NULL</span><span class="p">;</span>
+        <span class="n">buffer_units</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">size</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+ 
+<span class="kt">int</span> <span class="nf">main</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">memset</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buffer_units</span><span class="p">,</span> <span class="mh">0x00</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">buffer_units</span><span class="p">));</span>
+    <span class="kt">int</span> <span class="n">decrease_buffer_size</span> <span class="o">=</span> <span class="n">MAX_MEMORY_SIZE</span><span class="p">;</span>
+    <span class="kt">bool</span> <span class="n">left_half_flag</span>   <span class="o">=</span>   <span class="nb">false</span><span class="p">;</span>
+    <span class="kt">time_t</span>  <span class="n">start_time</span> <span class="o">=</span> <span class="n">time</span><span class="p">(</span><span class="mi">0</span><span class="p">);</span>
+    <span class="k">while</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>  <span class="p">{</span>
+        <span class="n">MallocBuffer</span><span class="p">(</span><span class="n">decrease_buffer_size</span><span class="p">);</span>
+        <span class="n">FreeHalfBuffer</span><span class="p">(</span><span class="n">left_half_flag</span><span class="p">);</span>
+        <span class="n">left_half_flag</span> <span class="o">=</span> <span class="o">!</span><span class="n">left_half_flag</span><span class="p">;</span>
+        <span class="o">--</span><span class="n">decrease_buffer_size</span><span class="p">;</span>
+        <span class="k">if</span> <span class="p">(</span><span class="mi">0</span> <span class="o">==</span> <span class="n">decrease_buffer_size</span><span class="p">)</span> <span class="k">break</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="n">FreeHalfBuffer</span><span class="p">(</span><span class="n">left_half_flag</span><span class="p">);</span>
+    <span class="kt">time_t</span> <span class="n">end_time</span> <span class="o">=</span> <span class="n">time</span><span class="p">(</span><span class="mi">0</span><span class="p">);</span>
+    <span class="kt">long</span> <span class="n">elapsed_time</span> <span class="o">=</span> <span class="n">difftime</span><span class="p">(</span><span class="n">end_time</span><span class="p">,</span> <span class="n">start_time</span><span class="p">);</span>
+ 
+    <span class="n">printf</span><span class="p">(</span><span class="s">"Used %ld seconds. </span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">elapsed_time</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mi">1</span><span class="p">;</span>
+<span class="p">}</span><span class="w">
+</span></pre></td></tr></tbody></table></code></pre></figure>
+
+<p>References</p>
+
+<p>1) Fragmentation of memory     <br />
+https://en.wikipedia.org/wiki/Fragmentation_of_memory</p>
+
+<p>2) How Firefox fix memory fragmentation problem   <br />
+https://blog.pavlov.net/2007/11/10/memory-fragmentation/</p>
+
+<p>3) Malloc Internals  <br />
+https://sourceware.org/glibc/wiki/MallocInternals</p>
+
+
+    
+
+</div>
+
+
+    <footer class="site-footer">
+    Ding Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+    
+    
+</footer>
+
+
+    
+
+    </div>
+  </body>
+
+</html>

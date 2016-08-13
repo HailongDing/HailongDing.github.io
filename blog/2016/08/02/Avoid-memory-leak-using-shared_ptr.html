@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Ding Hailong :: Avoid memory leak using shared_ptr</title>
+    <meta name="description" content="Shared_ptr was first designed and implemented in boost, and finally became part of the C++11 Standard as std::shared_ptr. Boost defines it as, “The shared_pt...">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://hailongding.github.io/blog/2016/08/02/Avoid-memory-leak-using-shared_ptr">
+    <link rel="alternate" type="application/rss+xml" title="Ding Hailong" href="http://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Ding Hailong</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+    
+    
+     <li><a href="/blog/" class="page-link">Blog</a>
+    
+    </li>
+    
+    
+     <li><a href="/misc/" class="page-link">Misc</a>
+    
+    </li>
+    
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Avoid memory leak using shared_ptr</h1>
+    <p class="post-meta">Posted on August 2, 2016  ()</p>
+
+    
+
+    
+    <p class="post-meta">Categories:
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="avoid memory leak">avoid memory leak</a>&nbsp; -->
+    avoid memory leak&nbsp;
+    
+
+    </p>
+    
+    </header>
+
+    <p>Shared_ptr was first designed and implemented in boost, and finally became part of the C++11 Standard as std::shared_ptr. Boost defines it as, “The shared_ptr class template stores a pointer to a dynamically allocated object, typically with a C++ new-expression. The object pointed to is guaranteed to be deleted when the last shared_ptr pointing to it is destroyed or reset.” This auto-delete character makes it possible to avoid memory leak.</p>
+
+<p>It’s not hard to use shared_ptr. We just create an object, pass it to the shared_ptr, use the pointer as a common one, and have no need to care about when to delete it. Here is a simple example:</p>
+
+<figure class="highlight"><pre><code class="language-cpp" data-lang="cpp"><table style="border-spacing: 0"><tbody><tr><td class="gutter gl" style="text-align: right"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38</pre></td><td class="code"><pre><span class="cp">#include &lt;iostream&gt;
+#include &lt;memory&gt;
+</span> 
+<span class="k">class</span> <span class="nc">UserDefinedClass</span><span class="p">{</span>
+  <span class="k">public</span><span class="o">:</span>
+    <span class="n">UserDefinedClass</span><span class="p">();</span>
+    <span class="kt">int</span>     <span class="n">GetValue</span><span class="p">();</span>
+    <span class="kt">void</span>    <span class="n">SetValue</span><span class="p">(</span><span class="k">const</span> <span class="kt">int</span> <span class="n">value</span><span class="p">);</span>
+ 
+  <span class="k">private</span><span class="o">:</span>
+    <span class="kt">int</span> <span class="n">value_</span><span class="p">;</span>
+<span class="p">};</span>
+ 
+<span class="n">UserDefinedClass</span><span class="o">::</span><span class="n">UserDefinedClass</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">value_</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+ 
+<span class="kt">int</span> <span class="n">UserDefinedClass</span><span class="o">::</span><span class="n">GetValue</span><span class="p">()</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="n">value_</span><span class="p">;</span>
+<span class="p">}</span>
+ 
+<span class="kt">void</span> <span class="n">UserDefinedClass</span><span class="o">::</span><span class="n">SetValue</span><span class="p">(</span><span class="k">const</span> <span class="kt">int</span> <span class="n">value</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">value_</span>  <span class="o">=</span>    <span class="n">value</span><span class="p">;</span>
+<span class="p">}</span>
+ 
+<span class="kt">int</span> <span class="n">main</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">UserDefinedClass</span><span class="o">&gt;</span> <span class="n">sp1</span><span class="p">;</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">UserDefinedClass</span><span class="o">&gt;</span> <span class="n">sp2</span><span class="p">(</span><span class="k">new</span> <span class="n">UserDefinedClass</span><span class="p">);</span>
+ 
+    <span class="n">sp1</span> <span class="o">=</span> <span class="n">sp2</span><span class="p">;</span>
+    <span class="n">sp1</span><span class="o">-&gt;</span><span class="n">SetValue</span><span class="p">(</span><span class="mi">10</span><span class="p">);</span>
+    <span class="n">sp2</span><span class="o">-&gt;</span><span class="n">SetValue</span><span class="p">(</span><span class="mi">20</span><span class="p">);</span>
+ 
+     <span class="k">if</span> <span class="p">(</span><span class="n">sp1</span><span class="p">)</span> <span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"sp1: "</span> <span class="o">&lt;&lt;</span> <span class="n">sp1</span><span class="o">-&gt;</span><span class="n">GetValue</span><span class="p">()</span> <span class="o">&lt;&lt;</span> <span class="sc">'\n'</span><span class="p">;</span>
+     <span class="k">if</span> <span class="p">(</span><span class="n">sp2</span><span class="p">)</span> <span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"sp2: "</span> <span class="o">&lt;&lt;</span> <span class="n">sp2</span><span class="o">-&gt;</span><span class="n">GetValue</span><span class="p">()</span> <span class="o">&lt;&lt;</span> <span class="sc">'\n'</span><span class="p">;</span>
+ 
+     <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span><span class="w">
+</span></pre></td></tr></tbody></table></code></pre></figure>
+
+<p>In the above code, we can eliminate the “new” operation by using “make_shared” to get an efficiency benefit by consolidating allocation.</p>
+
+<p>When considering arrays, we can combined the vector with shared_ptr. The following example will show us how to do.</p>
+
+<figure class="highlight"><pre><code class="language-cpp" data-lang="cpp"><table style="border-spacing: 0"><tbody><tr><td class="gutter gl" style="text-align: right"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140</pre></td><td class="code"><pre><span class="cp">#include &lt;cstdio&gt;
+#include &lt;cstring&gt;
+#include &lt;memory&gt;
+#include &lt;thread&gt;
+#include &lt;mutex&gt;
+#include &lt;vector&gt;
+#include &lt;semaphore.h&gt;
+</span> 
+<span class="k">using</span> <span class="k">namespace</span> <span class="n">std</span><span class="p">;</span>
+ 
+<span class="cp">#define   MAX_CACHE_SIZE    100
+#define   MAX_BUFFER_SIZE   (1024*1024)
+</span> 
+<span class="k">struct</span> <span class="n">MemoryUnit</span><span class="p">{</span>
+    <span class="kt">int</span> <span class="n">size</span><span class="p">;</span>
+    <span class="c1">// there is a space between the two '&gt;' characters
+</span>    <span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">vector</span><span class="o">&lt;</span><span class="kt">char</span><span class="o">&gt;</span> <span class="o">&gt;</span> <span class="n">buffer</span><span class="p">;</span>
+<span class="p">};</span>
+ 
+<span class="k">struct</span> <span class="n">MemoryCache</span><span class="p">{</span>
+    <span class="n">pthread_mutex_t</span>  <span class="n">mutex_cache</span><span class="p">;</span>
+    <span class="n">sem_t</span>    <span class="n">sem_empty</span><span class="p">;</span>
+    <span class="n">sem_t</span>    <span class="n">sem_full</span><span class="p">;</span>
+    <span class="n">vector</span><span class="o">&lt;</span><span class="k">struct</span> <span class="n">MemoryUnit</span><span class="o">&gt;</span> <span class="n">cached_vector</span><span class="p">;</span>
+<span class="p">};</span>
+ 
+<span class="k">class</span> <span class="nc">SharedPtrDemo</span><span class="p">{</span>
+  <span class="k">public</span><span class="o">:</span>
+    <span class="n">SharedPtrDemo</span><span class="p">();</span>
+    <span class="o">~</span><span class="n">SharedPtrDemo</span><span class="p">();</span>
+    <span class="kt">void</span> <span class="n">Start</span><span class="p">();</span>
+ 
+  <span class="k">private</span><span class="o">:</span>
+    <span class="k">struct</span> <span class="n">MemoryCache</span>  <span class="n">memory_cache</span><span class="p">;</span>
+    <span class="n">pthread_t</span>  <span class="n">producer_thread_id</span><span class="p">;</span>
+    <span class="n">pthread_t</span>  <span class="n">consumer_thread_id</span><span class="p">;</span>
+    <span class="kt">void</span>  <span class="n">Producer</span><span class="p">();</span>
+    <span class="kt">void</span>  <span class="n">Consumer</span><span class="p">();</span>
+ 
+    <span class="k">static</span> <span class="kt">void</span><span class="o">*</span> <span class="nf">ProducerEntrance</span><span class="p">(</span><span class="kt">void</span><span class="o">*</span> <span class="n">args</span><span class="p">)</span>  <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">NULL</span> <span class="o">==</span> <span class="n">args</span><span class="p">)</span> <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+ 
+        <span class="n">SharedPtrDemo</span><span class="o">*</span> <span class="n">instance</span> <span class="o">=</span> <span class="k">static_cast</span><span class="o">&lt;</span><span class="n">SharedPtrDemo</span><span class="o">*&gt;</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">instance</span><span class="p">)</span>
+            <span class="n">instance</span><span class="o">-&gt;</span><span class="n">Producer</span><span class="p">();</span>
+ 
+        <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+    <span class="p">}</span>
+ 
+    <span class="k">static</span> <span class="kt">void</span><span class="o">*</span> <span class="nf">ConsumerEntrance</span><span class="p">(</span><span class="kt">void</span><span class="o">*</span> <span class="n">args</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">NULL</span> <span class="o">==</span> <span class="n">args</span><span class="p">)</span> <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+ 
+        <span class="n">SharedPtrDemo</span><span class="o">*</span> <span class="n">instance</span> <span class="o">=</span> <span class="k">static_cast</span><span class="o">&lt;</span><span class="n">SharedPtrDemo</span><span class="o">*&gt;</span><span class="p">(</span><span class="n">args</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">instance</span><span class="p">)</span>
+            <span class="n">instance</span><span class="o">-&gt;</span><span class="n">Consumer</span><span class="p">();</span>
+ 
+        <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">};</span>
+ 
+<span class="n">SharedPtrDemo</span><span class="o">::</span><span class="n">SharedPtrDemo</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">pthread_mutex_init</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">mutex_cache</span><span class="p">,</span> <span class="nb">NULL</span><span class="p">);</span>
+    <span class="n">sem_init</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">sem_empty</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">MAX_CACHE_SIZE</span><span class="p">);</span>
+    <span class="n">sem_init</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">sem_full</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
+<span class="p">}</span>
+ 
+<span class="n">SharedPtrDemo</span><span class="o">::~</span><span class="n">SharedPtrDemo</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">pthread_mutex_destroy</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">mutex_cache</span><span class="p">);</span>
+    <span class="n">sem_destroy</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">sem_empty</span><span class="p">);</span>
+    <span class="n">sem_destroy</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">sem_full</span><span class="p">);</span>
+<span class="p">}</span>
+ 
+<span class="kt">void</span> <span class="n">SharedPtrDemo</span><span class="o">::</span><span class="n">Start</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">pthread_create</span><span class="p">(</span><span class="o">&amp;</span><span class="n">producer_thread_id</span><span class="p">,</span>
+                   <span class="nb">NULL</span><span class="p">,</span>
+                   <span class="n">SharedPtrDemo</span><span class="o">::</span><span class="n">ProducerEntrance</span><span class="p">,</span>
+                   <span class="p">(</span><span class="n">SharedPtrDemo</span><span class="o">*</span> <span class="p">)</span><span class="k">this</span><span class="p">);</span>
+ 
+    <span class="n">pthread_create</span><span class="p">(</span><span class="o">&amp;</span><span class="n">consumer_thread_id</span><span class="p">,</span>
+                   <span class="nb">NULL</span><span class="p">,</span>
+                   <span class="n">SharedPtrDemo</span><span class="o">::</span><span class="n">ConsumerEntrance</span><span class="p">,</span>
+                   <span class="p">(</span><span class="n">SharedPtrDemo</span><span class="o">*</span> <span class="p">)</span><span class="k">this</span><span class="p">);</span>
+<span class="p">}</span>
+ 
+<span class="kt">void</span> <span class="n">SharedPtrDemo</span><span class="o">::</span><span class="n">Producer</span><span class="p">()</span> <span class="p">{</span>
+    <span class="kt">unsigned</span> <span class="kt">int</span>  <span class="n">produced_count</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+ 
+    <span class="k">while</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+        <span class="o">++</span><span class="n">produced_count</span><span class="p">;</span>
+        <span class="k">struct</span> <span class="n">MemoryUnit</span> <span class="n">produced_unit</span><span class="p">;</span>
+        <span class="n">memset</span><span class="p">(</span><span class="o">&amp;</span><span class="n">produced_unit</span><span class="p">,</span> <span class="mh">0x00</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">produced_unit</span><span class="p">));</span>
+ 
+        <span class="n">srand</span><span class="p">(</span><span class="n">time</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span><span class="o">+</span><span class="n">produced_count</span><span class="p">);</span>
+        <span class="kt">int</span> <span class="n">memory_size</span> <span class="o">=</span> <span class="n">rand</span><span class="p">()</span> <span class="o">%</span> <span class="n">MAX_BUFFER_SIZE</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+        <span class="n">produced_unit</span><span class="p">.</span><span class="n">buffer</span> <span class="o">=</span> <span class="n">make_shared</span><span class="o">&lt;</span><span class="n">vector</span><span class="o">&lt;</span><span class="kt">char</span><span class="o">&gt;</span> <span class="o">&gt;</span><span class="p">(</span><span class="n">memory_size</span><span class="p">);</span>
+ 
+        <span class="c1">// put whatever you want to the buffer
+</span>        <span class="n">memcpy</span><span class="p">(</span><span class="o">&amp;</span><span class="p">(</span><span class="o">*</span><span class="n">produced_unit</span><span class="p">.</span><span class="n">buffer</span><span class="p">)[</span><span class="mi">0</span><span class="p">],</span> <span class="o">&amp;</span><span class="n">produced_count</span><span class="p">,</span><span class="k">sizeof</span><span class="p">(</span><span class="n">produced_count</span><span class="p">));</span>
+        <span class="n">produced_unit</span><span class="p">.</span><span class="n">size</span> <span class="o">=</span>  <span class="n">memory_size</span><span class="p">;</span>
+ 
+        <span class="n">sem_wait</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">sem_empty</span><span class="p">);</span>
+        <span class="n">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">mutex_cache</span><span class="p">);</span>
+        <span class="n">memory_cache</span><span class="p">.</span><span class="n">cached_vector</span><span class="p">.</span><span class="n">push_back</span><span class="p">(</span><span class="n">produced_unit</span><span class="p">);</span>
+        <span class="n">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">mutex_cache</span><span class="p">);</span>
+        <span class="n">sem_post</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">sem_full</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+ 
+<span class="kt">void</span> <span class="n">SharedPtrDemo</span><span class="o">::</span> <span class="n">Consumer</span><span class="p">()</span> <span class="p">{</span>
+    <span class="kt">int</span> <span class="n">passed_value</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="kt">unsigned</span> <span class="kt">int</span> <span class="n">consumed_count</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+ 
+    <span class="k">while</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">struct</span> <span class="n">MemoryUnit</span> <span class="n">consumed_unit</span><span class="p">;</span>
+        <span class="n">memset</span><span class="p">(</span><span class="o">&amp;</span><span class="n">consumed_unit</span><span class="p">,</span> <span class="mh">0x00</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">consumed_unit</span><span class="p">));</span>
+ 
+        <span class="n">sem_wait</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">sem_full</span><span class="p">);</span>
+        <span class="n">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">mutex_cache</span><span class="p">);</span>
+        <span class="n">vector</span><span class="o">&lt;</span><span class="k">struct</span> <span class="n">MemoryUnit</span><span class="o">&gt;::</span><span class="n">iterator</span> <span class="n">vector_it</span>
+            <span class="o">=</span> <span class="n">memory_cache</span><span class="p">.</span><span class="n">cached_vector</span><span class="p">.</span><span class="n">begin</span><span class="p">();</span>
+        <span class="n">consumed_unit</span> <span class="o">=</span> <span class="o">*</span><span class="n">vector_it</span><span class="p">;</span>
+        <span class="n">memory_cache</span><span class="p">.</span><span class="n">cached_vector</span><span class="p">.</span><span class="n">erase</span><span class="p">(</span><span class="n">vector_it</span><span class="p">);</span>
+        <span class="n">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">mutex_cache</span><span class="p">);</span>
+        <span class="n">sem_post</span><span class="p">(</span><span class="o">&amp;</span><span class="n">memory_cache</span><span class="p">.</span><span class="n">sem_empty</span><span class="p">);</span>
+ 
+        <span class="c1">// use the buffer, then it will be destroyed automatically
+</span>        <span class="n">memcpy</span><span class="p">(</span><span class="o">&amp;</span><span class="n">passed_value</span><span class="p">,</span> <span class="o">&amp;</span><span class="p">(</span><span class="o">*</span><span class="n">consumed_unit</span><span class="p">.</span><span class="n">buffer</span><span class="p">)[</span><span class="mi">0</span><span class="p">],</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">passed_value</span><span class="p">));</span>
+        <span class="n">printf</span><span class="p">(</span><span class="s">"Consumed %d units, and the value = %d</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span>
+               <span class="o">++</span><span class="n">consumed_count</span><span class="p">,</span> <span class="n">passed_value</span><span class="p">);</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+ 
+<span class="kt">int</span> <span class="n">main</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">SharedPtrDemo</span> <span class="n">demo</span><span class="p">;</span>
+    <span class="n">demo</span><span class="p">.</span><span class="n">Start</span><span class="p">();</span>
+ 
+    <span class="n">getchar</span><span class="p">();</span>
+ 
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span><span class="w">
+</span></pre></td></tr></tbody></table></code></pre></figure>
+
+<p>Convenient as it is, there are some potential dangers when using shared_ptr.</p>
+
+<p>1) Avoid the circular references
+Because the implementation of shared_ptr uses reference counting, while circular references will make the mechanism fail. Here is an example:</p>
+
+<figure class="highlight"><pre><code class="language-cpp" data-lang="cpp"><table style="border-spacing: 0"><tbody><tr><td class="gutter gl" style="text-align: right"><pre class="lineno">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28</pre></td><td class="code"><pre><span class="cp">#include &lt;memory&gt;
+#include &lt;iostream&gt;
+</span> 
+<span class="k">using</span> <span class="k">namespace</span> <span class="n">std</span><span class="p">;</span>
+ 
+<span class="k">class</span> <span class="nc">B</span><span class="p">;</span>
+<span class="k">class</span> <span class="nc">A</span><span class="p">{</span>
+  <span class="k">public</span><span class="o">:</span>
+    <span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">B</span><span class="o">&gt;</span> <span class="n">b_ptr</span><span class="p">;</span>
+    <span class="n">A</span><span class="p">()</span> <span class="p">{</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"A() </span><span class="se">\n</span><span class="s">"</span><span class="p">;}</span>
+    <span class="o">~</span><span class="n">A</span><span class="p">()</span> <span class="p">{</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"~A() </span><span class="se">\n</span><span class="s">"</span><span class="p">;}</span>
+<span class="p">};</span>
+ 
+<span class="k">class</span> <span class="nc">B</span><span class="p">{</span>
+  <span class="k">public</span><span class="o">:</span>
+    <span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span> <span class="n">a_ptr</span><span class="p">;</span>  <span class="c1">// use weak_ptr to break the cycle
+</span>    <span class="n">B</span><span class="p">()</span> <span class="p">{</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"B() </span><span class="se">\n</span><span class="s">"</span><span class="p">;}</span>
+    <span class="o">~</span><span class="n">B</span><span class="p">()</span> <span class="p">{</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"~B() </span><span class="se">\n</span><span class="s">"</span><span class="p">;}</span>
+<span class="p">};</span>
+ 
+<span class="kt">int</span> <span class="nf">main</span><span class="p">()</span> <span class="p">{</span>
+    <span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span> <span class="n">a_</span> <span class="o">=</span> <span class="n">make_shared</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span><span class="p">();</span>
+    <span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">B</span><span class="o">&gt;</span> <span class="n">b_</span> <span class="o">=</span> <span class="n">make_shared</span><span class="o">&lt;</span><span class="n">B</span><span class="o">&gt;</span><span class="p">();</span>
+    <span class="n">a_</span><span class="o">-&gt;</span><span class="n">b_ptr</span> <span class="o">=</span> <span class="n">b_</span><span class="p">;</span>
+    <span class="n">b_</span><span class="o">-&gt;</span><span class="n">a_ptr</span> <span class="o">=</span> <span class="n">a_</span><span class="p">;</span>
+ 
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span><span class="w">
+</span></pre></td></tr></tbody></table></code></pre></figure>
+
+<p>This program will end up with print “A()” and “B()”. There’s no destruction of A and B. There will surely lead to memory leak, and make a long-lived program be killed eventually. To break the cycle, we can use weak_ptr.</p>
+
+<p>2) Always use make_shared instead of new
+Make_shared will help us to achieve high performance and avoid memory leak in some situation. For example, code like F(std::shared_ptr<T>(new T), g()) might cause a memory leak if g throws an exception because g() may be called after new T and before the constructor of shared_ptr<T>. While this doesn’t occur in F(std::make_shared<T>(), g()), since two function calls are never interleaved.</T></T></T></p>
+
+<p>3) Avoid to use the raw pointer
+Calling the get() function to get the raw pointer or passing a reference of a raw pointer to a shared_ptr would be dangerous, because the internal count won’t increase.</p>
+
+<p>As we’ve learned the memory fragmentation problem before. Will there be the same problem with shared_ptr? Well, we can see that shared_ptr uses new to allocate memory on the heap. And some memory usage patterns, those with many long-lived small objects, are trend to cause memory fragmentation. And we can use third party memory libraries such as jemalloc and tcmalloc to avoid it.</p>
+
+<p>References</p>
+
+<p>1) Official definition of shared_ptr class template  <br />
+http://www.boost.org/doc/libs/1_61_0/libs/smart_ptr/shared_ptr.htm</p>
+
+<p>2) Potential dangers when using boost::shared_ptr   <br />
+http://stackoverflow.com/questions/701456/what-are-potential-dangers-when-using-boostshared-ptr</p>
+
+<p>3) Why should we almost always use make_shared   <br />
+https://herbsutter.com/2013/05/29/gotw-89-solution-smart-pointers/</p>
+
+<p>4) Performance compared with make_shared and new   <br />
+http://tech-foo.blogspot.jp/2012/04/experimenting-with-c-stdmakeshared.html</p>
+
+
+    
+
+</div>
+
+
+    <footer class="site-footer">
+    Ding Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+    
+    
+</footer>
+
+
+    
+
+    </div>
+  </body>
+
+</html>
