@@ -5,8 +5,8 @@
     <description>Ding Hailong's homepage</description>
     <link>http://hailongding.github.io/</link>
     <atom:link href="http://hailongding.github.io/feed.xml" rel="self" type="application/rss+xml"/>
-    <pubDate>Sun, 14 Aug 2016 04:11:33 +0800</pubDate>
-    <lastBuildDate>Sun, 14 Aug 2016 04:11:33 +0800</lastBuildDate>
+    <pubDate>Sun, 14 Aug 2016 19:00:30 +0800</pubDate>
+    <lastBuildDate>Sun, 14 Aug 2016 19:00:30 +0800</lastBuildDate>
     <generator>Jekyll v3.2.1</generator>
     
       <item>
@@ -702,9 +702,9 @@ http://processors.wiki.ti.com/index.php/OMAP-L138_Software_Design_Guide#Linux_Dr
 &lt;p&gt;4) Linux Kernel and Driver Development Training   &lt;br /&gt;
 http://free-electrons.com/doc/training/linux-kernel/linux-kernel-slides.pdf&lt;/p&gt;
 </description>
-        <pubDate>Wed, 03 Aug 2016 00:00:00 +0800</pubDate>
-        <link>http://hailongding.github.io/blog/2016/08/03/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board</link>
-        <guid isPermaLink="true">http://hailongding.github.io/blog/2016/08/03/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board</guid>
+        <pubDate>Fri, 12 Aug 2016 00:00:00 +0800</pubDate>
+        <link>http://hailongding.github.io/blog/2016/08/12/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board</link>
+        <guid isPermaLink="true">http://hailongding.github.io/blog/2016/08/12/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board</guid>
         
         
         <category>linux driver</category>
@@ -1332,9 +1332,9 @@ https://blog.pavlov.net/2007/11/10/memory-fragmentation/&lt;/p&gt;
 &lt;p&gt;3) Malloc Internals  &lt;br /&gt;
 https://sourceware.org/glibc/wiki/MallocInternals&lt;/p&gt;
 </description>
-        <pubDate>Mon, 01 Aug 2016 00:00:00 +0800</pubDate>
-        <link>http://hailongding.github.io/blog/2016/08/01/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc</link>
-        <guid isPermaLink="true">http://hailongding.github.io/blog/2016/08/01/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc</guid>
+        <pubDate>Fri, 15 Jul 2016 00:00:00 +0800</pubDate>
+        <link>http://hailongding.github.io/blog/2016/07/15/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc</link>
+        <guid isPermaLink="true">http://hailongding.github.io/blog/2016/07/15/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc</guid>
         
         
         <category>memory fragmentation</category>
@@ -1342,6 +1342,23 @@ https://sourceware.org/glibc/wiki/MallocInternals&lt;/p&gt;
         <category>embedded</category>
         
         <category>tcmalloc</category>
+        
+      </item>
+    
+      <item>
+        <title>SQLite service based on ICE</title>
+        <description>&lt;p&gt;“SQLite is a software library that implements a self-contained, serverless, zero-configuration, transactional SQL database engine”. It was widely used incluing in our embedded devices. However, its serverless character make it impossible to used by remote clients like most RDBMS. In order to solve this problem, we try to make a SQLite server by the help of ICE and CppSQLite. The Internet Communications Engine (ICE) is a comprehensive RPC framework, which make it very suitable to write server programs; and CppSQLite is a very concise c++ wrapper for SQLite, which make it easy to handle SQLite.&lt;/p&gt;
+
+&lt;p&gt;The code is at https://github.com/HailongDing/SQLite-service-based-on-ICE.&lt;/p&gt;
+</description>
+        <pubDate>Thu, 14 Jul 2016 00:00:00 +0800</pubDate>
+        <link>http://hailongding.github.io/blog/2016/07/14/SQLite-service-based-on-ICE</link>
+        <guid isPermaLink="true">http://hailongding.github.io/blog/2016/07/14/SQLite-service-based-on-ICE</guid>
+        
+        
+        <category>SQLite service</category>
+        
+        <category>ICE(Internet Communications Engine)</category>
         
       </item>
     
