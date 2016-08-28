@@ -8,6 +8,7 @@ http://hailongding.github.io/misc/
 http://hailongding.github.io/research/
 http://hailongding.github.io/sitemap.txt
 
+http://hailongding.github.io/blog/2016/08/27/How-to-write-a-Linux-driver-for-the-I-C-device-on-an-OMAP-L138-board
 http://hailongding.github.io/blog/2016/08/12/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board
 http://hailongding.github.io/blog/2016/08/02/Avoid-memory-leak-using-shared_ptr
 http://hailongding.github.io/blog/2016/07/15/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc
