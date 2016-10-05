@@ -5,8 +5,8 @@
     <description>Hailong's homepage</description>
     <link>http://hailongding.github.io/</link>
     <atom:link href="http://hailongding.github.io/feed.xml" rel="self" type="application/rss+xml"/>
-    <pubDate>Wed, 05 Oct 2016 10:40:58 +0800</pubDate>
-    <lastBuildDate>Wed, 05 Oct 2016 10:40:58 +0800</lastBuildDate>
+    <pubDate>Wed, 05 Oct 2016 10:48:41 +0800</pubDate>
+    <lastBuildDate>Wed, 05 Oct 2016 10:48:41 +0800</lastBuildDate>
     <generator>Jekyll v3.2.1</generator>
     
       <item>
@@ -1062,9 +1062,9 @@ http://www.nxp.com/documents/data_sheet/SC16IS752_SC16IS762.pdf&lt;/p&gt;
 &lt;p&gt;3) OMAP-L138 Software Design Guide   &lt;br /&gt;
 http://processors.wiki.ti.com/index.php/OMAP-L138_Software_Design_Guide#Linux_Drivers:&lt;/p&gt;
 </description>
-        <pubDate>Sat, 27 Aug 2016 00:00:00 +0800</pubDate>
-        <link>http://hailongding.github.io/blog/2016/08/27/How-to-write-a-Linux-driver-for-the-I-C-device-on-an-OMAP-L138-board</link>
-        <guid isPermaLink="true">http://hailongding.github.io/blog/2016/08/27/How-to-write-a-Linux-driver-for-the-I-C-device-on-an-OMAP-L138-board</guid>
+        <pubDate>Tue, 27 Sep 2016 00:00:00 +0800</pubDate>
+        <link>http://hailongding.github.io/blog/2016/09/27/How-to-write-a-Linux-driver-for-the-I-C-device-on-an-OMAP-L138-board</link>
+        <guid isPermaLink="true">http://hailongding.github.io/blog/2016/09/27/How-to-write-a-Linux-driver-for-the-I-C-device-on-an-OMAP-L138-board</guid>
         
         
         <category>linux driver</category>
