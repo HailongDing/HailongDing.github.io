@@ -5,8 +5,8 @@
     <description>Hailong's homepage</description>
     <link>http://hailongding.github.io/</link>
     <atom:link href="http://hailongding.github.io/feed.xml" rel="self" type="application/rss+xml"/>
-    <pubDate>Wed, 05 Oct 2016 10:48:41 +0800</pubDate>
-    <lastBuildDate>Wed, 05 Oct 2016 10:48:41 +0800</lastBuildDate>
+    <pubDate>Wed, 12 Oct 2016 18:52:57 +0800</pubDate>
+    <lastBuildDate>Wed, 12 Oct 2016 18:52:57 +0800</lastBuildDate>
     <generator>Jekyll v3.2.1</generator>
     
       <item>
@@ -2411,7 +2411,7 @@ https://sourceware.org/glibc/wiki/MallocInternals&lt;/p&gt;
     
       <item>
         <title>SQLite service based on ICE</title>
-        <description>&lt;p&gt;“SQLite is a software library that implements a self-contained, serverless, zero-configuration, transactional SQL database engine”. It was widely used incluing in our embedded devices. However, its serverless character make it impossible to used by remote clients like most RDBMS. In order to solve this problem, we try to make a SQLite server by the help of ICE and CppSQLite. The Internet Communications Engine (ICE) is a comprehensive RPC framework, which make it very suitable to write server programs; and CppSQLite is a very concise c++ wrapper for SQLite, which make it easy to handle SQLite.&lt;/p&gt;
+        <description>&lt;p&gt;“SQLite is a software library that implements a self-contained, serverless, zero-configuration, transactional SQL database engine”. It is widely used in embedded devices. However, its serverless character makes it impossible to be used by remote clients like most RDBMS. In order to solve this problem, we try to make a SQLite server with the help of ICE and CppSQLite. The Internet Communications Engine (ICE) is a comprehensive RPC framework, which makes it very suitable to write server programs; and CppSQLite is a very concise C++ wrapper for SQLite, which makes it easy to handle SQLite.&lt;/p&gt;
 
 &lt;p&gt;The code is at https://github.com/HailongDing/SQLite-service-based-on-ICE.&lt;/p&gt;
 </description>
