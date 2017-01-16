@@ -1,15 +1,16 @@
 
-http://hailongding.github.io/blog/
-http://hailongding.github.io/cv/
-http://hailongding.github.io/feed.xml
-http://hailongding.github.io/
-http://hailongding.github.io/css/main.css
-http://hailongding.github.io/misc/
-http://hailongding.github.io/research/
-http://hailongding.github.io/sitemap.txt
+http://localhost:4000/blog/
+http://localhost:4000/cv/
+http://localhost:4000/feed.xml
+http://localhost:4000/
+http://localhost:4000/css/main.css
+http://localhost:4000/misc/
+http://localhost:4000/research/
+http://localhost:4000/sitemap.txt
 
-http://hailongding.github.io/blog/2016/09/27/How-to-write-a-Linux-driver-for-the-I-C-device-on-an-OMAP-L138-board
-http://hailongding.github.io/blog/2016/08/12/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board
-http://hailongding.github.io/blog/2016/08/02/Avoid-memory-leak-using-shared_ptr
-http://hailongding.github.io/blog/2016/07/15/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc
-http://hailongding.github.io/blog/2016/06/14/SQLite-service-based-on-ICE
+http://localhost:4000/blog/2017/01/15/Using-ZeroMQ-Message-Middleware-to-Meet-the-Challenge-of-Multithreaded-Programming
+http://localhost:4000/blog/2016/09/27/How-to-write-a-Linux-driver-for-the-I-C-device-on-an-OMAP-L138-board
+http://localhost:4000/blog/2016/08/12/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board
+http://localhost:4000/blog/2016/08/02/Avoid-memory-leak-using-shared_ptr
+http://localhost:4000/blog/2016/07/15/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc
+http://localhost:4000/blog/2016/07/14/SQLite-service-based-on-ICE
