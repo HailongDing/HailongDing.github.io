@@ -13,7 +13,6 @@ https://hailongding.github.io/blog/2016/09/27/How-to-write-a-Linux-driver-for-th
 https://hailongding.github.io/blog/2016/08/12/How-to-write-a-Linux-driver-for-the-GPIO-device-on-an-OMAP-L138-board
 https://hailongding.github.io/blog/2016/08/02/Avoid-memory-leak-using-shared_ptr
 https://hailongding.github.io/blog/2016/07/15/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc
-https://hailongding.github.io/blog/2016/07/14/SQLite-service-based-on-ICE
 https://hailongding.github.io/blog/2026/03/18/Why-RTC-Time-Changes-Do-Not-Survive-a-Reboot-on-a-Cloud-VM
 https://hailongding.github.io/blog/2026/03/25/Moving-Millions-of-Small-Files-Between-Cloud-VMs
 https://hailongding.github.io/blog/2026/03/31/When-Hundreds-of-VMs-Boot-at-Once-The-VPC-DNS-Query-Quota
