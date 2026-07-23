@@ -5,7 +5,6 @@ https://hailongding.github.io/feed.xml
 https://hailongding.github.io/
 https://hailongding.github.io/css/main.css
 https://hailongding.github.io/misc/
-https://hailongding.github.io/research/
 https://hailongding.github.io/sitemap.txt
 
 https://hailongding.github.io/blog/2017/01/15/Using-ZeroMQ-Message-Middleware-to-Meet-the-Challenge-of-Multithreaded-Programming
