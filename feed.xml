@@ -10,6 +10,62 @@
     <generator>Jekyll v3.3.1</generator>
     
       <item>
+        <title>Anatomy of a Compromised Cloud VM</title>
+        <description>A customer could not log in over SSH or VNC. The VM was not down, it was busy. A walkthrough of the evidence chain from monitoring graphs to packet capture to serial console logs, and how to recover.</description>
+        <pubDate>Wed, 03 Jun 2026 00:00:00 +0000</pubDate>
+        <link>http://localhost:4000/blog/2026/06/03/Anatomy-of-a-Compromised-Cloud-VM</link>
+        <guid isPermaLink="true">http://localhost:4000/blog/2026/06/03/Anatomy-of-a-Compromised-Cloud-VM</guid>
+      </item>
+      <item>
+        <title>Building a Self-Hosted BIND9 DNS Sandbox for Device Testing</title>
+        <description>How to test embedded devices that phone home to geo-restricted registration servers, by standing up a BIND9 resolver that lies about exactly the domains you choose and forwards everything else.</description>
+        <pubDate>Wed, 20 May 2026 00:00:00 +0000</pubDate>
+        <link>http://localhost:4000/blog/2026/05/20/Building-a-Self-Hosted-BIND9-DNS-Sandbox-for-Device-Testing</link>
+        <guid isPermaLink="true">http://localhost:4000/blog/2026/05/20/Building-a-Self-Hosted-BIND9-DNS-Sandbox-for-Device-Testing</guid>
+      </item>
+      <item>
+        <title>Multiple Public IPs on One VM: Why You Need Policy Routing</title>
+        <description>Attach three network interfaces, bind a public IP to each, and only the first one answers. Nothing is misconfigured in the cloud console. The problem is that Linux has exactly one default route.</description>
+        <pubDate>Wed, 13 May 2026 00:00:00 +0000</pubDate>
+        <link>http://localhost:4000/blog/2026/05/13/Multiple-Public-IPs-on-One-VM-Why-You-Need-Policy-Routing</link>
+        <guid isPermaLink="true">http://localhost:4000/blog/2026/05/13/Multiple-Public-IPs-on-One-VM-Why-You-Need-Policy-Routing</guid>
+      </item>
+      <item>
+        <title>The 255-CPU Wall: xAPIC, x2APIC and Old Kernels</title>
+        <description>A 2017-vintage kernel booted happily on every machine it was given until it met a 256-core AMD server, then hung with soft lockups. The reason is an 8-bit field designed decades ago.</description>
+        <pubDate>Fri, 10 Apr 2026 00:00:00 +0000</pubDate>
+        <link>http://localhost:4000/blog/2026/04/10/The-255-CPU-Wall-xAPIC-x2APIC-and-Old-Kernels</link>
+        <guid isPermaLink="true">http://localhost:4000/blog/2026/04/10/The-255-CPU-Wall-xAPIC-x2APIC-and-Old-Kernels</guid>
+      </item>
+      <item>
+        <title>Recovering a Disk After sgdisk Was Run on the Wrong Device</title>
+        <description>One missing character turned a routine MBR-to-GPT conversion into a 3.2 TB filesystem reporting 64 zettabytes of free space. A step-by-step recovery that got 2.1 TB of data back intact.</description>
+        <pubDate>Tue, 07 Apr 2026 00:00:00 +0000</pubDate>
+        <link>http://localhost:4000/blog/2026/04/07/Recovering-a-Disk-After-sgdisk-Was-Run-on-the-Wrong-Device</link>
+        <guid isPermaLink="true">http://localhost:4000/blog/2026/04/07/Recovering-a-Disk-After-sgdisk-Was-Run-on-the-Wrong-Device</guid>
+      </item>
+      <item>
+        <title>When Hundreds of VMs Boot at Once: The VPC DNS Query Quota</title>
+        <description>The same image booted fine on one cloud and failed on another, but only when hundreds of instances started together. The culprit was not the image. It was a per-second DNS query quota on the VPC resolver.</description>
+        <pubDate>Tue, 31 Mar 2026 00:00:00 +0000</pubDate>
+        <link>http://localhost:4000/blog/2026/03/31/When-Hundreds-of-VMs-Boot-at-Once-The-VPC-DNS-Query-Quota</link>
+        <guid isPermaLink="true">http://localhost:4000/blog/2026/03/31/When-Hundreds-of-VMs-Boot-at-Once-The-VPC-DNS-Query-Quota</guid>
+      </item>
+      <item>
+        <title>Moving Millions of Small Files Between Cloud VMs</title>
+        <description>Copying 188 GB spread across millions of tiny files is not a bandwidth problem, it is an IOPS and syscall problem. Why tar-then-copy was the wrong first instinct, and the one-line pipeline that fixed it.</description>
+        <pubDate>Wed, 25 Mar 2026 00:00:00 +0000</pubDate>
+        <link>http://localhost:4000/blog/2026/03/25/Moving-Millions-of-Small-Files-Between-Cloud-VMs</link>
+        <guid isPermaLink="true">http://localhost:4000/blog/2026/03/25/Moving-Millions-of-Small-Files-Between-Cloud-VMs</guid>
+      </item>
+      <item>
+        <title>Why RTC Time Changes Do Not Survive a Reboot on a Cloud VM</title>
+        <description>A customer wanted the hardware clock of a cloud VM set to local time instead of UTC. Over SSH the change vanished on reboot; through the VNC console it stuck. Here is why, and what it tells you about virtual hardware clocks.</description>
+        <pubDate>Wed, 18 Mar 2026 00:00:00 +0000</pubDate>
+        <link>http://localhost:4000/blog/2026/03/18/Why-RTC-Time-Changes-Do-Not-Survive-a-Reboot-on-a-Cloud-VM</link>
+        <guid isPermaLink="true">http://localhost:4000/blog/2026/03/18/Why-RTC-Time-Changes-Do-Not-Survive-a-Reboot-on-a-Cloud-VM</guid>
+      </item>
+      <item>
         <title>Using ZeroMQ Message Middleware to Meet the Challenge of Multithreaded Programming</title>
         <description>&lt;p&gt;As we all know, it’s not easy to write multithreaded programs. On one hand, we should strive to use the synchronization mechanism carefully; on the other hand, we should avoid jeopardizing the program’s performance. In recent years, lock-free programming is introduced as a way to safely share changing data between multiple threads without the cost of acquiring and releasing locks. This sounds like a panacea, but it is complex and subtle, and sometimes doesn’t give the benefits that it promises.&lt;/p&gt;
 

@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Building a Self-Hosted BIND9 DNS Sandbox for Device Testing</title>
+    <meta name="description" content="How to test embedded devices that phone home to geo-restricted registration servers, by standing up a BIND9 resolver that lies about exactly the domains you choose and forwards everything else.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://localhost:4000/blog/2026/05/20/Building-a-Self-Hosted-BIND9-DNS-Sandbox-for-Device-Testing">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="http://localhost:4000/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Building a Self-Hosted BIND9 DNS Sandbox for Device Testing</h1>
+    <p class="post-meta">Posted on May 20, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="dns">dns</a>&nbsp; -->
+    dns&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="networking">networking</a>&nbsp; -->
+    networking&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="testing">testing</a>&nbsp; -->
+    testing&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A hardware manufacturer that makes security and surveillance equipment came to us with a testing problem.</p>
+
+<p>Their devices ship worldwide, and on first power-up each one contacts a registration endpoint to activate itself and pull configuration. Which endpoint depends on the destination market — there is a different regional service for each, and several of them are geo-restricted, reachable only from within the region they serve.</p>
+
+<p>That makes pre-shipment testing awkward. Before a batch goes out, they want to confirm each device actually completes its registration handshake. But from the factory they cannot reach most of the registration servers, and even where they can, hammering a production activation service with test traffic is not something anybody wants.</p>
+
+<p>What they needed was a way to make devices believe they were talking to a registration server while actually talking to something under their control — <strong>without modifying device firmware</strong>, since the whole point is to test the shipping build.</p>
+
+<p>The answer is DNS. Devices resolve a hostname before they connect to it, so whoever controls the answer controls the destination.</p>
+
+<h2 id="the-approach">The approach</h2>
+
+<p>A single BIND9 server that:</p>
+
+<ul>
+  <li>answers authoritatively for the specific domains being tested, pointing them at test endpoints;</li>
+  <li>forwards everything else to real upstream resolvers, so normal internet access still works;</li>
+  <li>is pointed at by devices via DHCP or a static resolver setting.</li>
+</ul>
+
+<p>That second point is what makes this practical. A test environment that breaks all other name resolution is a poor test environment — devices frequently need NTP, certificate validation and firmware checks to get far enough into their startup sequence for registration to be worth testing. Everything except the domains you deliberately override should behave completely normally.</p>
+
+<pre><code>  Device
+    │  DNS query
+    ▼
+  ┌──────────────────────────────────┐
+  │ BIND9 test resolver              │
+  │                                  │
+  │  test domains ──► local zone     │──► test endpoint
+  │  everything else ──► forwarders  │──► real internet
+  └──────────────────────────────────┘
+</code></pre>
+
+<h2 id="setting-it-up">Setting it up</h2>
+
+<p>A small cloud VM running Ubuntu 22.04 is plenty. DNS is not demanding.</p>
+
+<h3 id="1-install">1. Install</h3>
+
+<pre><code>$ sudo apt update
+$ sudo apt install -y bind9 bind9utils dnsutils
+</code></pre>
+
+<h3 id="2-configure-recursion-and-forwarding">2. Configure recursion and forwarding</h3>
+
+<p>In <code>/etc/bind/named.conf.options</code>:</p>
+
+<pre><code>options {
+    directory "/var/cache/bind";
+
+    recursion yes;
+    allow-query { 10.0.0.0/8; 192.168.0.0/16; };
+
+    forwarders {
+        8.8.8.8;
+        1.1.1.1;
+    };
+    forward only;
+
+    dnssec-validation no;
+
+    listen-on { any; };
+    listen-on-v6 { none; };
+};
+</code></pre>
+
+<p>Two settings deserve comment.</p>
+
+<p><code>allow-query</code> must be restricted to your own networks. <strong>An open recursive resolver on the public internet will be found and abused</strong> — within hours, typically — as an amplifier for reflection attacks. This is not a theoretical risk; it is the single most important line in the file.</p>
+
+<p><code>dnssec-validation no</code> is deliberate here and would be wrong almost anywhere else. We are about to return forged answers for domains we do not own, which is precisely what DNSSEC exists to prevent. If the real domains are signed, validation will correctly reject our fabricated records. Turning it off is acceptable only because this is an isolated test environment — and it is a good reminder that <strong>this technique works only against names that are not DNSSEC-validated by the client</strong>.</p>
+
+<h3 id="3-define-a-zone-for-the-domains-under-test">3. Define a zone for the domains under test</h3>
+
+<p>In <code>/etc/bind/named.conf.local</code>:</p>
+
+<pre><code>zone "registration.example.com" {
+    type master;
+    file "/etc/bind/db.registration.example.com";
+};
+</code></pre>
+
+<p>And the zone file:</p>
+
+<pre><code>$TTL 60
+@   IN  SOA ns1.registration.example.com. admin.registration.example.com. (
+        2026052001  ; Serial - bump on every edit
+        3600        ; Refresh
+        600         ; Retry
+        86400       ; Expire
+        60 )        ; Negative cache TTL
+
+@       IN  NS   ns1.registration.example.com.
+ns1     IN  A    10.0.1.53
+
+@       IN  A    10.0.1.100
+api     IN  A    10.0.1.100
+device  IN  A    10.0.1.100
+*       IN  A    10.0.1.100
+</code></pre>
+
+<p>Notes on choices here:</p>
+
+<ul>
+  <li><strong>A 60-second TTL.</strong> Deliberately short. When you repoint a test domain you want devices picking up the change in a minute, not in a day. Cache lifetime is a tuning parameter, and in a test environment short beats efficient.</li>
+  <li><strong>The wildcard record.</strong> Devices often use hostnames you did not anticipate, and firmware rarely documents every endpoint it contacts. A wildcard catches them all and saves a debugging cycle for each one you would otherwise discover the hard way.</li>
+  <li><strong>The serial number.</strong> Written as a date plus a counter. BIND refuses to reload a zone whose serial has not increased, and forgetting to bump it is the most common reason a change appears to have no effect.</li>
+</ul>
+
+<h3 id="4-check-and-reload">4. Check and reload</h3>
+
+<pre><code>$ sudo named-checkconf
+$ sudo named-checkzone registration.example.com \
+       /etc/bind/db.registration.example.com
+$ sudo systemctl restart bind9
+</code></pre>
+
+<p>Use the checking tools before every restart. A syntax error leaves BIND refusing to start, and since everything in the test environment depends on it, that is a fast way to make it look as though every device has failed at once.</p>
+
+<h3 id="5-open-the-firewall">5. Open the firewall</h3>
+
+<p>DNS needs both protocols — UDP for ordinary queries, TCP for responses too large for a UDP packet and for zone transfers:</p>
+
+<pre><code>$ sudo ufw allow from 10.0.0.0/8 to any port 53 proto udp
+$ sudo ufw allow from 10.0.0.0/8 to any port 53 proto tcp
+</code></pre>
+
+<p>On a cloud VM the security group needs the same rules, sourced from your test network only. Opening UDP/53 to <code>0.0.0.0/0</code> recreates the open-resolver problem regardless of what <code>allow-query</code> says.</p>
+
+<p>People forget TCP/53 constantly. The symptom — most lookups work, but a few specific ones fail — is confusing enough to burn an afternoon.</p>
+
+<h3 id="6-point-devices-at-it">6. Point devices at it</h3>
+
+<p>For a device you can log into:</p>
+
+<pre><code>nameserver 10.0.1.53
+</code></pre>
+
+<p>For appliances you cannot configure directly — which is most of them — set the DNS server in the DHCP scope for the test network. Every device that boots there picks it up automatically, which is both less work and a better test, since it exercises the same configuration path a customer's network would.</p>
+
+<h2 id="verifying-it-works">Verifying it works</h2>
+
+<pre><code>$ dig @10.0.1.53 api.registration.example.com +short
+10.0.1.100
+
+$ dig @10.0.1.53 www.google.com +short
+142.250.x.x
+</code></pre>
+
+<p>The first confirms the override, the second confirms forwarding still works. Both need to pass — an environment where the override works but general resolution is broken will produce device failures that have nothing to do with what you are testing.</p>
+
+<p>From the device side, <code>tcpdump -i any -n port 53</code> on the resolver shows exactly what each device asks for as it boots. This is more useful than it sounds: it is effectively free documentation of a device's network dependencies, including ones the datasheet never mentions.</p>
+
+<h2 id="adding-a-domain-later">Adding a domain later</h2>
+
+<p>The routine, once it is running:</p>
+
+<ol>
+  <li>Edit the zone file (or add a new zone for a new domain).</li>
+  <li><strong>Bump the serial.</strong></li>
+  <li><code>sudo named-checkzone &lt;zone&gt; &lt;file&gt;</code></li>
+  <li><code>sudo rndc reload &lt;zone&gt;</code></li>
+</ol>
+
+<p><code>rndc reload</code> re-reads a single zone without restarting the daemon or dropping the cache — a few milliseconds rather than a service interruption. On a shared test environment that difference matters.</p>
+
+<h2 id="things-worth-knowing-before-you-build-this">Things worth knowing before you build this</h2>
+
+<p><strong>HTTPS will fail, and that is expected.</strong> DNS controls where the connection goes, not what certificate is presented. A device connecting to your test endpoint over TLS will get a certificate that does not match the hostname and, if it validates properly, refuse to continue. Depending on what you are testing, you either need a certificate for the real hostname on your test endpoint, or a device build that trusts your test CA, or you accept that you are testing the resolution and connection path rather than the full handshake. Decide which before you start, because discovering it halfway through is dispiriting.</p>
+
+<p><strong>Devices that ignore DHCP DNS.</strong> A surprising number of embedded devices have a hard-coded resolver — 8.8.8.8 is the usual choice — and never consult what DHCP gave them. For those, a DNAT rule on the test network gateway redirecting all outbound port 53 to your resolver is the workaround:</p>
+
+<pre><code>$ sudo iptables -t nat -A PREROUTING -i eth1 -p udp --dport 53 \
+       -j DNAT --to-destination 10.0.1.53
+</code></pre>
+
+<p>This also catches devices using DNS-over-TLS on port 853 if you extend it, though DNS-over-HTTPS on port 443 is genuinely hard to intercept this way and may require blocking the known DoH endpoints outright.</p>
+
+<p><strong>Keep it isolated.</strong> A resolver that lies about real domains must not be reachable from anything but the test network. Separate VPC or subnet, no route to production, restrictive security group. The failure mode — a production system silently resolving a real domain to a test endpoint — is the kind of problem that takes a long time to diagnose because nobody suspects DNS.</p>
+
+<p><strong>Response Policy Zones are the alternative.</strong> BIND's RPZ feature can rewrite answers for arbitrary domains without hosting a full zone for each, which scales better if you are overriding many domains across many parents. For a handful of test domains, plain authoritative zones are simpler to reason about and easier to hand to a colleague.</p>
+
+<h2 id="why-this-generalises">Why this generalises</h2>
+
+<p>The customer's use case was device registration, but the pattern applies far more widely:</p>
+
+<ul>
+  <li><strong>Testing against unreachable services</strong> — geo-restricted, partner-operated, or not built yet.</li>
+  <li><strong>Failure injection</strong> — point a dependency at an endpoint that returns errors, times out, or responds very slowly, and see what your software does.</li>
+  <li><strong>Migration rehearsal</strong> — verify a system works against a new backend before changing any real DNS records.</li>
+  <li><strong>Air-gapped environments</strong> — provide plausible answers for external services that are not reachable at all.</li>
+</ul>
+
+<p>In every case the appeal is the same: <strong>you redirect a dependency without touching the thing under test.</strong> No firmware rebuild, no configuration change, no code modification. The system behaves exactly as it will in production, and only its view of the network has changed — which is a considerably stronger test than one where you had to modify the software to make it testable.</p>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

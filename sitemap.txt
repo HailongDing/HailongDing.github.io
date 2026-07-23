@@ -14,3 +14,11 @@ http://localhost:4000/blog/2016/08/12/How-to-write-a-Linux-driver-for-the-GPIO-d
 http://localhost:4000/blog/2016/08/02/Avoid-memory-leak-using-shared_ptr
 http://localhost:4000/blog/2016/07/15/Fix-the-Memory-Fragmentation-of-Embedded-Systems-with-TCMalloc
 http://localhost:4000/blog/2016/07/14/SQLite-service-based-on-ICE
+http://localhost:4000/blog/2026/03/18/Why-RTC-Time-Changes-Do-Not-Survive-a-Reboot-on-a-Cloud-VM
+http://localhost:4000/blog/2026/03/25/Moving-Millions-of-Small-Files-Between-Cloud-VMs
+http://localhost:4000/blog/2026/03/31/When-Hundreds-of-VMs-Boot-at-Once-The-VPC-DNS-Query-Quota
+http://localhost:4000/blog/2026/04/07/Recovering-a-Disk-After-sgdisk-Was-Run-on-the-Wrong-Device
+http://localhost:4000/blog/2026/04/10/The-255-CPU-Wall-xAPIC-x2APIC-and-Old-Kernels
+http://localhost:4000/blog/2026/05/13/Multiple-Public-IPs-on-One-VM-Why-You-Need-Policy-Routing
+http://localhost:4000/blog/2026/05/20/Building-a-Self-Hosted-BIND9-DNS-Sandbox-for-Device-Testing
+http://localhost:4000/blog/2026/06/03/Anatomy-of-a-Compromised-Cloud-VM

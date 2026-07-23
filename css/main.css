@@ -528,3 +528,30 @@ ul.listing li.listing-item a {
     margin-left: auto;
     margin-right: auto;
     float: none; } }
+
+/* --- tables (added for technical posts) --- */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 0.75em;
+  font-size: 0.8em;
+  display: block;
+  overflow-x: auto; }
+
+table th, table td {
+  border: 1px solid #ccc;
+  padding: 0.3em 0.6em;
+  text-align: left;
+  vertical-align: top; }
+
+table th {
+  background-color: #e1e1e1;
+  font-weight: bold; }
+
+table tr:nth-child(even) td {
+  background-color: #e8e8e8; }
+
+/* keep long command lines from stretching the page */
+pre {
+  overflow-x: auto;
+  line-height: 1.35; }

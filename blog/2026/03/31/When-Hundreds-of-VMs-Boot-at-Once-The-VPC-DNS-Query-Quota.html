@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: When Hundreds of VMs Boot at Once: The VPC DNS Query Quota</title>
+    <meta name="description" content="The same image booted fine on one cloud and failed on another, but only when hundreds of instances started together. The culprit was not the image. It was a per-second DNS query quota on the VPC resolver.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://localhost:4000/blog/2026/03/31/When-Hundreds-of-VMs-Boot-at-Once-The-VPC-DNS-Query-Quota">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="http://localhost:4000/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>When Hundreds of VMs Boot at Once: The VPC DNS Query Quota</h1>
+    <p class="post-meta">Posted on March 31, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="dns">dns</a>&nbsp; -->
+    dns&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="cloud">cloud</a>&nbsp; -->
+    cloud&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="networking">networking</a>&nbsp; -->
+    networking&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer was migrating a render farm onto a new cloud platform. Their workflow creates hundreds of virtual machines at once, and each one mounts a long list of NFS shares at boot before joining the job queue.</p>
+
+<p>On the new platform, when they launched a large batch, <strong>some of the instances failed to boot</strong>. Not all of them, and not the same ones twice. Launch a handful and everything was fine; launch three hundred and a scattering of them would come up wrong.</p>
+
+<p>Their argument was reasonable and hard to dismiss: the image is byte-identical to the one they run elsewhere, and it works elsewhere. The migration cut-over was scheduled for the following day. The case was escalated.</p>
+
+<p>The image was fine. The problem was a quota nobody thinks about until they hit it.</p>
+
+<h2 id="what-the-image-does-at-boot">What the image does at boot</h2>
+
+<p>The relevant part of the picture was in <code>/etc/fstab</code>, which contained a long list of NFS mounts written as <em>hostnames</em> rather than IP addresses — storage servers, cache tiers, publish and render trees, dozens of entries:</p>
+
+<pre><code>storage-a.example.internal:/export/data/render  /media/render  nfs  vers=3,...
+storage-b.example.internal:/export/mirror/work  /media/work    nfs  vers=3,...
+cache-01.example.internal:/export/cache         /media/cache   nfs  vers=3,...
+... dozens more
+</code></pre>
+
+<p>Each of those hostnames has to be resolved before the mount can proceed. And since <code>fstab</code> processing at boot fans out across mounts, they are resolved more or less simultaneously.</p>
+
+<p>So the arithmetic is: <strong>dozens of DNS queries per instance, multiplied by hundreds of instances starting within the same few seconds.</strong> Tens of thousands of queries hitting the VPC resolver in a very short window, from a standing start.</p>
+
+<p>The failures were intermittent and randomly distributed because that is exactly what a rate limit produces. Nothing is broken; a fraction of requests are simply refused, and which fraction depends on timing.</p>
+
+<h2 id="the-vpc-resolver-has-a-per-second-quota">The VPC resolver has a per-second quota</h2>
+
+<p>Every major cloud provides a resolver inside the VPC at a well-known address, handed to instances by DHCP. It resolves both public names and any private zones you have configured. It is convenient, it needs no setup, and it is invisible until it isn't.</p>
+
+<p>It also enforces a <strong>per-second query limit per network interface</strong>. Exceed it and the excess queries are dropped — not answered with an error, just dropped.</p>
+
+<p>Every cloud does this. The published limit on AWS is 1024 packets per second per network interface toward the Amazon-provided DNS server, and the other major providers apply comparable per-ENI caps. It is not a platform defect and it is not something you can raise with a support ticket; it is a property of a shared service that has to protect itself from any single tenant.</p>
+
+<p>What makes it hard to spot is the failure mode. A dropped DNS query does not produce a clear error. The resolver library waits for its timeout — commonly five seconds — then retries, then eventually gives up and reports something unhelpfully generic. In our case that surfaced as a mount failing, which in turn caused a boot-time unit to fail, which left the instance in a state the orchestration considered dead.</p>
+
+<p>The chain from cause to symptom is long enough that nothing along it mentions DNS.</p>
+
+<h2 id="why-it-worked-on-the-other-platform">Why it worked on the other platform</h2>
+
+<p>Worth addressing, because "identical image, different result" is what made the customer confident the platform was at fault.</p>
+
+<p>Limits differ between providers, and so does timing. On their existing platform their launch pattern happened to stay under the ceiling — perhaps the limit was higher, perhaps instance start-up was staggered slightly differently, perhaps their resolver configuration cached more aggressively. They were near the edge there and over it here.</p>
+
+<p>This is a genuinely useful thing to internalise about migrations. Workloads that run close to an invisible limit on one platform will cross it on another, and the symptom will look like the new platform is broken. The honest framing is not "your cloud is worse" but "this workload has a hidden dependency on a shared-resource limit, and it was always going to surface eventually."</p>
+
+<h2 id="how-to-confirm-it">How to confirm it</h2>
+
+<p>Before changing anything, it is worth establishing that DNS really is the bottleneck:</p>
+
+<ul>
+  <li><strong>Count the queries.</strong> Resolve the <code>fstab</code> hostname list by hand and multiply by the batch size. If the result is in the tens of thousands per second, you have your answer without further investigation.</li>
+  <li><strong>Watch it happen.</strong> <code>tcpdump -i any -n port 53</code> on one instance during a large batch launch shows the queries going out and, tellingly, the retries — the same query repeated after a timeout with no answer in between is the signature of a dropped packet rather than a refusal.</li>
+  <li><strong>Time a lookup during the storm.</strong> <code>dig</code> against the VPC resolver from an instance that is up while a batch is launching. Multi-second responses or timeouts confirm it.</li>
+  <li><strong>Test the null hypothesis.</strong> Put the hostnames in <code>/etc/hosts</code> on one instance and launch the same batch. If that instance boots reliably while its neighbours fail, DNS is the variable.</li>
+</ul>
+
+<h2 id="the-fixes">The fixes</h2>
+
+<p>Two approaches, addressing the problem at different levels.</p>
+
+<h3 id="option-1-do-not-query-dns-at-boot">Option 1: do not query DNS at boot</h3>
+
+<p>The most reliable fix is to remove the dependency. If the storage servers' addresses are stable — and for an NFS backend they generally are — the instance does not need to resolve anything at boot.</p>
+
+<p>Every cloud supports a user-data or startup-script mechanism that runs at first boot. Use it to write the mappings into <code>/etc/hosts</code> before the mounts are attempted:</p>
+
+<pre><code>#!/bin/bash
+cat &gt;&gt; /etc/hosts &lt;&lt;'EOF'
+10.0.10.11  storage-a.example.internal
+10.0.10.12  storage-b.example.internal
+10.0.10.21  cache-01.example.internal
+EOF
+mount -a
+</code></pre>
+
+<p>Dozens of queries per instance become zero. Even at a thousand simultaneous launches there is no DNS traffic at all during the critical window.</p>
+
+<p>The trade-off is that IP addresses are now baked into the launch configuration, so a storage server that moves requires a configuration update. For infrastructure that changes rarely, and where boot reliability at scale is the priority, that is usually a good deal. It is also easy to template — the user-data script can be generated from the same inventory that defines the storage layer.</p>
+
+<h3 id="option-2-run-your-own-resolver">Option 2: run your own resolver</h3>
+
+<p>If the names genuinely need to be dynamic, put your own DNS server in front of the VPC resolver. Instances query yours; yours forwards what it cannot answer.</p>
+
+<p>This helps for two reasons. Your resolver caches aggressively, so a thousand instances asking for the same hostname produce one upstream query rather than a thousand. And the quota applies per network interface — with the fan-out concentrated on your resolver's interface rather than spread across every instance, your own capacity is what matters, and you can scale it.</p>
+
+<p>BIND9 or dnsmasq on a small instance handles this comfortably. Two or three of them behind a load balancer removes the single point of failure that you have just introduced, which is the main cost of this option: you now own a piece of infrastructure that everything depends on at boot.</p>
+
+<h3 id="a-third-option-worth-mentioning">A third option worth mentioning</h3>
+
+<p>A local caching resolver on each instance — <code>systemd-resolved</code> with caching enabled, or a local dnsmasq — reduces repeat queries from that instance. It helps for workloads that resolve the same names repeatedly during their lifetime.</p>
+
+<p>It does not help here, because a cold cache at boot is exactly the situation. The first query for each name still goes to the VPC resolver, and at boot every query is the first one. Worth knowing so you do not reach for it and wonder why nothing improved.</p>
+
+<h2 id="what-the-customer-did">What the customer did</h2>
+
+<p>They took Option 1. The storage endpoints were static, the change was a few lines of user-data, and it required no new infrastructure the day before a migration. The next large batch launched cleanly and the cut-over went ahead on schedule.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>Boot-time DNS is a scaling bottleneck.</strong> Anything that resolves names during startup multiplies by your batch size. It is invisible at ten instances and decisive at five hundred.</li>
+  <li><strong>Cloud resolvers have per-interface quotas, and exceeding them looks like packet loss</strong>, not like an error. Expect timeouts and retries rather than a message naming the cause.</li>
+  <li><strong>Intermittent, randomly-distributed failures under load suggest a rate limit.</strong> Something deterministically broken fails deterministically.</li>
+  <li><strong>Hostnames in <code>fstab</code> are a hidden dependency.</strong> Convenient for maintenance, and a boot-time coupling to a shared service you do not control.</li>
+  <li><strong>Identical images can behave differently across clouds</strong>, because the environment they run in is not identical. During a migration, look for shared-service limits before concluding the image is fine.</li>
+</ul>
+
+<h3 id="reference">Reference</h3>
+
+<ul>
+  <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/AmazonDNS-concepts.html">Amazon DNS server concepts and limits</a> — a clear public write-up of the same per-interface quota, useful whichever provider you are on.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

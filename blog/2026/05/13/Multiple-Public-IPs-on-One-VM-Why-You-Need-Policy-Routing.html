@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Multiple Public IPs on One VM: Why You Need Policy Routing</title>
+    <meta name="description" content="Attach three network interfaces, bind a public IP to each, and only the first one answers. Nothing is misconfigured in the cloud console. The problem is that Linux has exactly one default route.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://localhost:4000/blog/2026/05/13/Multiple-Public-IPs-on-One-VM-Why-You-Need-Policy-Routing">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="http://localhost:4000/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Multiple Public IPs on One VM: Why You Need Policy Routing</h1>
+    <p class="post-meta">Posted on May 13, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="networking">networking</a>&nbsp; -->
+    networking&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="routing">routing</a>&nbsp; -->
+    routing&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer attached several elastic network interfaces to one virtual machine and bound a separate public IP to each. The topology in the cloud console looked exactly right. Only the first public IP worked. The others answered nothing — no SSH, no HTTP, no ping.</p>
+
+<p>Nothing was misconfigured on the cloud side. The problem is a property of how Linux routes packets, and it catches people out reliably enough that it is worth explaining properly rather than just pasting the fix.</p>
+
+<h2 id="the-setup">The setup</h2>
+
+<p>A typical multi-IP arrangement:</p>
+
+<table>
+  <thead>
+    <tr><th>Interface</th><th>Role</th><th>Private IP</th><th>Public IP</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>eth0</code></td><td>Primary ENI</td><td>10.0.1.10</td><td>IP-1</td></tr>
+    <tr><td><code>eth1</code></td><td>Secondary ENI</td><td>10.0.1.11</td><td>IP-2</td></tr>
+    <tr><td><code>eth2</code></td><td>Secondary ENI</td><td>10.0.1.12</td><td>IP-3</td></tr>
+  </tbody>
+</table>
+
+<p>Every interface is up. Every interface has an address. Every public IP is bound in the console. Traffic to IP-1 works perfectly; traffic to IP-2 and IP-3 disappears.</p>
+
+<h2 id="what-actually-happens-to-the-packet">What actually happens to the packet</h2>
+
+<p>Follow a single request to IP-2 through the system.</p>
+
+<p><strong>Inbound is fine.</strong> The packet arrives from the internet, the cloud network translates IP-2 to 10.0.1.11, and it is delivered to <code>eth1</code>. The kernel accepts it and hands it to the listening socket. Everything works as expected.</p>
+
+<p><strong>Outbound is where it falls apart.</strong> The application writes a reply. The kernel now has to decide which interface to send it out of, and it makes that decision by consulting the routing table:</p>
+
+<pre><code>$ ip route show
+default via 10.0.1.1 dev eth0
+10.0.1.0/24 dev eth0 proto kernel scope link src 10.0.1.10
+10.0.1.0/24 dev eth1 proto kernel scope link src 10.0.1.11
+10.0.1.0/24 dev eth2 proto kernel scope link src 10.0.1.12
+</code></pre>
+
+<p>There is <strong>one default route</strong>, and it points at <code>eth0</code>. The destination is somewhere on the internet, no more specific route matches, so the reply goes out via <code>eth0</code> — regardless of which interface the request arrived on.</p>
+
+<p>The reply now leaves the VM on the wrong interface, and the cloud network drops it. Every cloud platform performs a source/destination check: a packet leaving <code>eth0</code> must carry <code>eth0</code>'s source address. A packet with 10.0.1.11 as its source, egressing from the interface that owns 10.0.1.10, is discarded as spoofed.</p>
+
+<p>This is <strong>asymmetric routing</strong> — in one interface, out another. On a physical network with no filtering it sometimes limps along. In a cloud VPC it never does, and that is deliberate: those anti-spoofing checks are what keep tenants from forging each other's addresses.</p>
+
+<p>The result is that the client sees a connection that opens and then goes silent, or simply times out. From inside the VM, <code>tcpdump</code> shows the request arriving and the reply being sent, which is exactly the kind of evidence that sends people looking at security groups for an hour. The packet really is leaving; it is just leaving from the wrong door.</p>
+
+<h2 id="the-fix-one-routing-table-per-interface">The fix: one routing table per interface</h2>
+
+<p>The underlying limitation is that a single routing table can only express "packets to destination X go out interface Y". What we need is "packets <em>from</em> source A go out interface Y" — a decision based on the source address, which ordinary routing does not consider at all.</p>
+
+<p>Linux policy routing solves this. It supports many routing tables plus a set of rules that select which table to consult, and those rules <em>can</em> match on source address. So we give every interface its own table containing its own default route, and add a rule sending traffic from each source IP to the matching table.</p>
+
+<h3 id="step-1-a-routing-table-per-interface">Step 1: a routing table per interface</h3>
+
+<p>Name the tables in <code>/etc/iproute2/rt_tables</code>:</p>
+
+<pre><code>$ echo "101 eni1" | sudo tee -a /etc/iproute2/rt_tables
+$ echo "102 eni2" | sudo tee -a /etc/iproute2/rt_tables
+</code></pre>
+
+<p>Then give each one a default route out of its own interface:</p>
+
+<pre><code>$ sudo ip route add default via 10.0.1.1 dev eth1 table eni1
+$ sudo ip route add default via 10.0.1.1 dev eth2 table eni2
+</code></pre>
+
+<p>Adding a subnet route to each table as well avoids surprises with local traffic:</p>
+
+<pre><code>$ sudo ip route add 10.0.1.0/24 dev eth1 src 10.0.1.11 table eni1
+$ sudo ip route add 10.0.1.0/24 dev eth2 src 10.0.1.12 table eni2
+</code></pre>
+
+<h3 id="step-2-rules-that-select-the-table-by-source-address">Step 2: rules that select the table by source address</h3>
+
+<pre><code>$ sudo ip rule add from 10.0.1.11 lookup eni1
+$ sudo ip rule add from 10.0.1.12 lookup eni2
+</code></pre>
+
+<p>These say: any packet whose source address is 10.0.1.11 is routed using table <code>eni1</code>, whose default route exits via <code>eth1</code>.</p>
+
+<p>Note that the rules match the <strong>private</strong> addresses, not the public ones. The VM never sees its public IPs — the cloud network handles that translation outside the guest. Trying to match on the public IP is a common early mistake and produces rules that never fire.</p>
+
+<p><code>eth0</code> needs no rule. Anything not matched by a rule falls through to the main table, whose default route already points at <code>eth0</code>.</p>
+
+<h3 id="step-3-verify">Step 3: verify</h3>
+
+<pre><code>$ ip rule show
+0:      from all lookup local
+32764:  from 10.0.1.12 lookup eni2
+32765:  from 10.0.1.11 lookup eni1
+32766:  from all lookup main
+32767:  from all lookup default
+
+$ ip route show table eni1
+default via 10.0.1.1 dev eth1
+10.0.1.0/24 dev eth1 scope link src 10.0.1.11
+</code></pre>
+
+<p>Rules are evaluated in ascending priority order, so the specific source rules are consulted before the catch-all <code>main</code> lookup. That ordering is what makes the whole thing work.</p>
+
+<p>To test a route decision without generating traffic:</p>
+
+<pre><code>$ ip route get 8.8.8.8 from 10.0.1.11
+8.8.8.8 from 10.0.1.11 via 10.0.1.1 dev eth1 table eni1
+</code></pre>
+
+<p>If that says <code>dev eth1</code>, the kernel will do the right thing. If it says <code>dev eth0</code>, a rule is missing or misordered.</p>
+
+<h3 id="step-4-make-it-survive-a-reboot">Step 4: make it survive a reboot</h3>
+
+<p>Everything above is runtime state and vanishes on reboot. This is worth being deliberate about, because the failure mode — works perfectly for weeks, then breaks during an unrelated maintenance restart — is unpleasant to debug.</p>
+
+<p>With netplan:</p>
+
+<pre><code>network:
+  version: 2
+  ethernets:
+    eth1:
+      addresses: [10.0.1.11/24]
+      routes:
+        - to: 0.0.0.0/0
+          via: 10.0.1.1
+          table: 101
+      routing-policy:
+        - from: 10.0.1.11
+          table: 101
+</code></pre>
+
+<p>With <code>systemd-networkd</code>, use <code>[Route]</code> and <code>[RoutingPolicyRule]</code> sections in the <code>.network</code> file for each interface. On NetworkManager systems, <code>nmcli</code> supports <code>ipv4.routes</code> and <code>ipv4.routing-rules</code> per connection.</p>
+
+<h2 id="before-and-after">Before and after</h2>
+
+<p><strong>Before</strong> — one default route, everything exits <code>eth0</code>:</p>
+
+<pre><code>  Internet
+     │  request to IP-2
+     ▼
+  ┌──────────────────────────────┐
+  │ VM                           │
+  │  eth0 (10.0.1.10) ◄── default route
+  │  eth1 (10.0.1.11) ◄── request lands here
+  │  eth2 (10.0.1.12)            │
+  └──────────────────────────────┘
+     │  reply, src 10.0.1.11, out via eth0
+     ▼
+   dropped by source check   ✗
+</code></pre>
+
+<p><strong>After</strong> — each source address has its own table:</p>
+
+<pre><code>  Internet
+     │  request to IP-2
+     ▼
+  ┌──────────────────────────────┐
+  │ VM (policy routing)          │
+  │  eth0 + main table           │
+  │  eth1 + table eni1  ◄── rule: from 10.0.1.11
+  │  eth2 + table eni2  ◄── rule: from 10.0.1.12
+  └──────────────────────────────┘
+     │  reply, src 10.0.1.11, out via eth1
+     ▼
+   delivered   ✓
+</code></pre>
+
+<h2 id="notes-from-practice">Notes from practice</h2>
+
+<ul>
+  <li><strong>Applications must bind to the right address.</strong> Policy routing fixes replies on established connections, because those already carry the correct source. For connections the VM <em>initiates</em>, the source address is chosen when the socket is created — so a program that binds to <code>0.0.0.0</code> will get <code>eth0</code>'s address and route out <code>eth0</code>. If you want outbound traffic on a specific interface, bind explicitly.</li>
+  <li><strong>Reverse path filtering.</strong> Some distributions ship <code>rp_filter</code> in strict mode, which drops inbound packets whose source would not route back out the same interface. Once policy routing is correct this usually resolves itself, but if things still fail, loose mode (<code>net.ipv4.conf.all.rp_filter = 2</code>) is the usual remedy.</li>
+  <li><strong>Same-subnet interfaces are the hard case.</strong> When every ENI is in one subnet, ordinary routing genuinely cannot distinguish them — the routes are identical apart from the interface. Different subnets per ENI sometimes appear to work without policy routing, which makes the same-subnet case feel like a bug when it is not.</li>
+  <li><strong>The pattern generalises.</strong> This is the same technique used for multi-homed servers, dual-ISP routers with per-source egress, and VPN split routing. Any time the routing decision depends on where a packet came from rather than where it is going, <code>ip rule</code> is the tool.</li>
+</ul>
+
+<p>The thing I would most want a reader to keep: when traffic arrives but replies vanish, stop looking at firewalls and look at which interface the reply leaves by. <code>ip route get &lt;dest&gt; from &lt;src&gt;</code> answers that question in one line.</p>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

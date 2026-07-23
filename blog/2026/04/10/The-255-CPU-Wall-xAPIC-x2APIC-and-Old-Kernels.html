@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: The 255-CPU Wall: xAPIC, x2APIC and Old Kernels</title>
+    <meta name="description" content="A 2017-vintage kernel booted happily on every machine it was given until it met a 256-core AMD server, then hung with soft lockups. The reason is an 8-bit field designed decades ago.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://localhost:4000/blog/2026/04/10/The-255-CPU-Wall-xAPIC-x2APIC-and-Old-Kernels">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="http://localhost:4000/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>The 255-CPU Wall: xAPIC, x2APIC and Old Kernels</h1>
+    <p class="post-meta">Posted on April 10, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux kernel">linux kernel</a>&nbsp; -->
+    linux kernel&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="hardware">hardware</a>&nbsp; -->
+    hardware&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="troubleshooting">troubleshooting</a>&nbsp; -->
+    troubleshooting&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer wanted to move a database server onto bigger hardware. The old instance had 64 virtual CPUs and 128 GB of memory; business growth meant they needed several times that. The target was a modern AMD EPYC instance with 384 vCPUs and just over a terabyte of RAM.</p>
+
+<p>It would not boot. The console showed the kernel starting normally, then a wall of soft lockup warnings, then nothing.</p>
+
+<p>The complication was the operating system. The customer's image ran a vendor-maintained enterprise Linux distribution on <strong>kernel 3.10.107</strong> — a 2017 kernel, in an image built in early 2022, on a distribution release that had since reached end of life. The OS vendor's team declined to help on the grounds that the release was no longer supported, which is a fair position and also not much use when a production database needs to move next week.</p>
+
+<p>So we investigated it ourselves. The answer turned out to be an 8-bit field specified decades ago.</p>
+
+<h2 id="establishing-what-actually-breaks">Establishing what actually breaks</h2>
+
+<p>Before theorising it was worth finding the boundary. We got the image into a lab environment — a 32 TB image copied across regions, which by itself took about a week and is a lesson in its own right — and booted it on everything we could get our hands on.</p>
+
+<table>
+  <thead>
+    <tr><th>CPU</th><th>vCPUs tested</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Intel Cascade Lake</td><td>1 – 84</td><td>Boots</td></tr>
+    <tr><td>Intel Ice Lake</td><td>2 – 128</td><td>Boots</td></tr>
+    <tr><td>Intel Emerald Rapids</td><td>2 – 224</td><td>Boots</td></tr>
+    <tr><td>AMD EPYC Milan</td><td>2 – 232</td><td>Boots</td></tr>
+    <tr><td>AMD EPYC Bergamo</td><td>&lt; 256</td><td>Boots</td></tr>
+    <tr><td>AMD EPYC Bergamo</td><td>≥ 256</td><td><strong>Hangs</strong></td></tr>
+    <tr><td>AMD EPYC Turin-Dense</td><td>≥ 256</td><td><strong>Hangs</strong></td></tr>
+  </tbody>
+</table>
+
+<p>The pattern is unusually clean for a kernel bug. It is not "AMD is broken" — AMD Milan with 232 vCPUs was fine. It is not "large machines are broken" — Intel at 224 vCPUs was fine, and we could not test Intel above 224 because no such instance existed at the time. It is specifically <strong>AMD at 256 vCPUs or more</strong>.</p>
+
+<p>A threshold at 256 in a computer is never a coincidence. It is 2<sup>8</sup>. Something in the boot path is using an 8-bit identifier, and at 256 CPUs it runs out of values.</p>
+
+<p>The kernel messages fit that reading. The lockups were reported against a specific CPU that never came up, along with RCU stall warnings — the read-copy-update subsystem complaining that a grace period could not complete because some CPU had not responded. A CPU that is online as far as the scheduler is concerned but cannot be reached is exactly what you would expect if the mechanism used to interrupt it cannot address it.</p>
+
+<h2 id="the-8-bit-field-xapic">The 8-bit field: xAPIC</h2>
+
+<p>Every CPU in an x86 system has a local APIC — Advanced Programmable Interrupt Controller — and every local APIC has an ID. That ID is how one CPU sends an interrupt to another. It is used constantly: waking a CPU during boot, IPIs for TLB shootdowns, timer delivery, rescheduling requests.</p>
+
+<p>In the original xAPIC design, that ID field is <strong>8 bits wide</strong>, and one value is reserved for broadcast. That gives you 255 addressable CPUs, and the APIC registers are reached through memory-mapped I/O.</p>
+
+<p>When that was specified, 255 CPUs was an absurd number for a single machine. It is not absurd any more.</p>
+
+<p>The successor, <strong>x2APIC</strong>, widens the ID to 32 bits — roughly four billion possible CPUs, comfortably beyond anything on the horizon — and switches from MMIO to model-specific registers, which is also faster since it avoids a memory transaction for every access. The catch is that enabling x2APIC generally requires interrupt remapping through the IOMMU, so the platform, firmware and kernel all have to cooperate.</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>xAPIC (legacy)</th><th>x2APIC (modern)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>APIC ID width</td><td>8 bits</td><td>32 bits</td></tr>
+    <tr><td>Maximum CPUs</td><td>255</td><td>~4 billion</td></tr>
+    <tr><td>Register access</td><td>MMIO</td><td>MSR (faster)</td></tr>
+    <tr><td>Requires</td><td>—</td><td>IOMMU / interrupt remapping</td></tr>
+  </tbody>
+</table>
+
+<p>You can check what your own machine settled on:</p>
+
+<pre><code>$ dmesg | grep -i x2apic
+$ grep -c ^processor /proc/cpuinfo
+</code></pre>
+
+<p>On a modern kernel and modern hardware you will typically see x2APIC enabled. That is the healthy case.</p>
+
+<h2 id="why-intel-was-fine-and-amd-was-not">Why Intel was fine and AMD was not</h2>
+
+<p>This is where the vendor split stops being mysterious. Intel introduced x2APIC around 2008, and kernel support for Intel's implementation is correspondingly old and well-exercised — by 2013, when the 3.10 series was released, that path had been in the tree and in production for years.</p>
+
+<p>AMD came to x2APIC considerably later, with the EPYC 7002 family in 2019 — six years <em>after</em> kernel 3.10 was released. A 2013 kernel cannot be expected to correctly enable a platform feature that did not exist on that vendor's hardware when it was written.</p>
+
+<p>So on an AMD machine the 3.10 kernel does not enable x2APIC. It falls back to xAPIC, which it handles perfectly well — and which can only address 255 CPUs. Boot proceeds, the kernel brings up processors one by one, and somewhere past the 255th it tries to send a startup IPI to a CPU whose APIC ID does not fit in the field. The interrupt goes nowhere. The boot CPU waits. RCU notices a CPU that never reports a quiescent state. The watchdog fires soft lockup warnings. The machine wedges.</p>
+
+<p>Note that nothing here is a *crash*. There is no panic, no oops, no error message naming the real problem. The kernel is behaving exactly as designed, using a mechanism that is simply too small for the machine it has been given. That is why the symptom is a hang rather than a diagnostic — and why the CPU count threshold, not the error text, is the thing that identifies it.</p>
+
+<h2 id="the-upstream-fix">The upstream fix</h2>
+
+<p>The relevant upstream work is a 2020 patch by David Woodhouse, <em>"x86/apic: Fix x2apic enablement without interrupt remapping"</em> (commit <code>26573a97746c</code>), which was backported into the stable series and landed in <strong>Linux 5.4.87</strong>.</p>
+
+<p>The vendor kernel line the customer would have needed picked it up in a 5.4.87-based release in early 2021, whose changelog lists AMD 256-core support as an explicit feature. That is a useful confirmation of the boundary: <strong>no kernel earlier than 5.4.87 in that line supports 256 or more AMD cores</strong>, and 3.10.107 is a very long way earlier.</p>
+
+<p>Which closed off the obvious fix. The distribution release the customer was running topped out at kernel 4.14. The fix needs 5.4.87 or later. There is no upgrade path within that distribution — you would have to change distribution, which for a production database image with a large amount of accumulated customisation is a project, not a maintenance window.</p>
+
+<h2 id="what-we-actually-did">What we actually did</h2>
+
+<p>With the software fix unavailable on the customer's timeline, the options were both about staying under 256.</p>
+
+<p><strong>Option A — disable hyper-threading.</strong> Turning SMT off on the 256-vCPU AMD instance halves it to 128 vCPUs, comfortably under the limit, while keeping all of the memory. You keep the large memory footprint that a database wants, and you throw away half your threads to do it. For a workload that is memory-bound rather than CPU-bound this can genuinely be the right trade.</p>
+
+<p><strong>Option B — a 192-vCPU instance.</strong> A different size in the same modern AMD family: 192 vCPUs, 576 GB of memory. 192 is under 255, so the problem never arises, and every thread is available. The cost is less memory than the largest instance offers.</p>
+
+<p>The customer chose Option B. It tripled their CPU capacity — 64 vCPUs to 192 — on a proven-compatible configuration, with no OS migration and no memory-bandwidth compromise from disabled SMT. The upgrade went through without incident.</p>
+
+<p>It is worth being clear that this is a workaround, not a fix. They are still running a 2017 kernel on an end-of-life distribution, and the next capacity increase will hit the same wall. The real fix is an OS upgrade, and this case gave them a concrete reason to schedule it.</p>
+
+<h2 id="what-to-take-away">What to take away</h2>
+
+<ul>
+  <li><strong>255 vCPUs is a real boundary, not a round number.</strong> If you are crossing it — in either direction, on any platform — check your kernel version first. Everything below it can look perfectly healthy right up to the moment it is not.</li>
+  <li><strong>Old kernels fail silently on new hardware.</strong> There was no message saying "too many CPUs for xAPIC". The kernel did something reasonable with an obsolete mechanism and hung. Expect vintage kernels on new silicon to produce hangs rather than diagnostics.</li>
+  <li><strong>Feature support is per-vendor and per-generation.</strong> "The kernel supports x2APIC" was true for Intel years before it was true for AMD. Generalising from one vendor to the other is how you get surprised.</li>
+  <li><strong>End-of-life means end of options.</strong> The technical fix existed and had existed for years. It was unreachable because the distribution had no path to a kernel new enough to contain it. OS lifecycle is a capacity-planning constraint, not just a security one.</li>
+  <li><strong>Test the instance type change before you need it.</strong> Most of the elapsed time here went into logistics — a week waiting for hardware, another week copying a 32 TB image between regions — not into diagnosis. A short test boot on the target shape, done early, would have surfaced this before it was urgent.</li>
+</ul>
+
+<h3 id="references">References</h3>
+
+<ul>
+  <li>Kernel configuration background on x2APIC: <a href="https://cateee.net/lkddb/web-lkddb/X86_X2APIC.html">X86_X2APIC in the Linux Kernel Driver Database</a></li>
+  <li>The upstream patch: <a href="https://lore.kernel.org/lkml/20201024213535.443185-2-dwmw2@infradead.org/">x86/apic: Fix x2apic enablement without interrupt remapping</a> (commit <code>26573a97746c</code>)</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

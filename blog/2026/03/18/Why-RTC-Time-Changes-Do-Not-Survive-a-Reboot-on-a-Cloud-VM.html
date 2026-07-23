@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Why RTC Time Changes Do Not Survive a Reboot on a Cloud VM</title>
+    <meta name="description" content="A customer wanted the hardware clock of a cloud VM set to local time instead of UTC. Over SSH the change vanished on reboot; through the VNC console it stuck. Here is why, and what it tells you about virtual hardware clocks.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://localhost:4000/blog/2026/03/18/Why-RTC-Time-Changes-Do-Not-Survive-a-Reboot-on-a-Cloud-VM">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="http://localhost:4000/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Why RTC Time Changes Do Not Survive a Reboot on a Cloud VM</h1>
+    <p class="post-meta">Posted on March 18, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="virtualization">virtualization</a>&nbsp; -->
+    virtualization&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="timekeeping">timekeeping</a>&nbsp; -->
+    timekeeping&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer wanted the hardware clock on their cloud VMs set to local time rather than UTC. Their application read the RTC directly and expected local time, and porting it was not on the table.</p>
+
+<p>This is a well-documented operation. Set the hardware clock, tell the system it is in local time, done:</p>
+
+<pre><code>$ sudo timedatectl set-local-rtc 1
+$ sudo hwclock --systohc --localtime
+</code></pre>
+
+<p>They did that over SSH. It worked. They rebooted, and the RTC was back to UTC.</p>
+
+<p>They tried it again through the VNC console instead of SSH, using the same commands. <strong>That time it persisted.</strong></p>
+
+<p>Same commands, same image, same instance — different result depending on how you were logged in. That is a strange enough claim that our first assumption was a procedural difference, so we set out to test it properly.</p>
+
+<h2 id="ruling-out-the-obvious">Ruling out the obvious</h2>
+
+<p>Before believing something that surprising, it is worth eliminating the alternatives. We ran the same sequence across a matrix of operating systems and instance types:</p>
+
+<table>
+  <thead>
+    <tr><th>Guest OS</th><th>Instance types tested</th><th>Over SSH</th><th>Over VNC</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>CentOS 7.9</td><td>six families, Intel and AMD</td><td>Lost on reboot</td><td>Persists</td></tr>
+    <tr><td>Ubuntu 22.04</td><td>six families, Intel and AMD</td><td>Lost on reboot</td><td>Persists</td></tr>
+    <tr><td>Vendor Linux 3.2</td><td>six families, Intel and AMD</td><td>Lost on reboot</td><td>Persists</td></tr>
+  </tbody>
+</table>
+
+<p>Completely consistent. Not OS-specific, not instance-type-specific, not a one-off. The only variable that changed the outcome was the access path.</p>
+
+<p>Which is genuinely counter-intuitive, because <strong>SSH and VNC should not differ in any way that matters here</strong>. Both give you a shell. Both run the command as root. The kernel does not know or care which TTY a process is attached to when it services an <code>ioctl</code>.</p>
+
+<p>So the difference is not in how the command runs. It is in what happens to the result afterwards.</p>
+
+<h2 id="a-virtual-machine-has-no-battery">A virtual machine has no battery</h2>
+
+<p>On a physical machine, the RTC is a small piece of dedicated hardware with its own battery. It keeps time while the machine is powered off, and writing to it changes a physical device that persists across power cycles by construction.</p>
+
+<p>A virtual machine has none of that. The "RTC" the guest sees is emulated by the hypervisor. When the guest writes to it, the write goes into a data structure belonging to the virtualisation layer, and what happens to that structure — whether it is kept, and for how long — is a decision made outside the guest.</p>
+
+<p>This is the crux. In a VM, <strong>the persistence of a hardware clock write is a hypervisor policy question, not a guest question.</strong> The guest can issue the write successfully, read it back successfully, and still have it discarded, because the guest is not the thing that decides.</p>
+
+<p>On a reboot the guest's emulated RTC is typically re-initialised from the host — from the host's clock, in UTC, which is what essentially every hypervisor and cloud platform standardises on. Any local modification is simply overwritten, and the guest gets no indication that this happened.</p>
+
+<h2 id="why-the-console-behaves-differently">Why the console behaves differently</h2>
+
+<p>The console is part of the virtualisation stack. Unlike SSH — which is an ordinary network service running inside the guest, with no relationship to the hypervisor at all — the VNC console is provided <em>by</em> the platform, and the session runs through machinery on the host side.</p>
+
+<p>The practical upshot is that the console path is bound up with the platform's own device model in a way that a network login is not, and in this environment a console-initiated change landed somewhere the reinitialisation did not clobber. A change made over SSH sat purely in guest-visible emulated state, which is exactly what gets reset.</p>
+
+<p>I want to be careful about how strongly to state this, because we characterised the behaviour without access to the hypervisor internals that would let us describe the mechanism precisely. The observation is solid and reproduced across eighteen combinations. The explanation is our best reading of it.</p>
+
+<p>But the general lesson holds regardless of the details, and it is the part worth carrying to other platforms:</p>
+
+<blockquote>
+  <p>In a virtual machine, the emulated RTC is owned by the hypervisor. A guest can write to it, but the guest does not decide whether that write survives a power cycle.</p>
+</blockquote>
+
+<h2 id="what-to-do-instead">What to do instead</h2>
+
+<p>Relying on console-specific behaviour to make a setting stick is not a foundation to build on. It is undocumented, it is platform-specific, and it will not survive a live migration or a platform upgrade. Better approaches, in order of preference:</p>
+
+<p><strong>Set the timezone, not the hardware clock.</strong> This is what the customer actually needed in almost every case:</p>
+
+<pre><code>$ sudo timedatectl set-timezone Asia/Shanghai
+</code></pre>
+
+<p>The system clock stays on UTC internally — which is what you want, since it makes log correlation and daylight-saving transitions sane — and everything that displays or formats a time shows local time. Applications using standard time functions get local time automatically. No hardware clock involved, and it persists because it is a file in the guest's own filesystem.</p>
+
+<p><strong>Re-apply at boot if you truly need a local RTC.</strong> If an application really does read the RTC directly and cannot be changed, stop trying to make the setting persist and just apply it on every boot:</p>
+
+<pre><code>[Unit]
+Description=Set RTC to local time
+After=systemd-timesyncd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/timedatectl set-local-rtc 1
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+
+<p>This is honest about what is happening: the hypervisor resets the clock at boot, so you set it again after boot. It works on every platform because it does not depend on any platform-specific behaviour.</p>
+
+<p><strong>Run NTP and treat the RTC as unreliable.</strong> Which is the right mental model for a VM in general.</p>
+
+<h2 id="the-broader-point-vm-clocks-drift">The broader point: VM clocks drift</h2>
+
+<p>This case is one instance of a wider truth that is worth being explicit about, because it comes up constantly in cloud environments and is often misdiagnosed as an application bug.</p>
+
+<p>Timekeeping on physical hardware relies on counting something that ticks at a known rate — usually the TSC, measured once at boot. Virtualisation breaks several of the assumptions that makes that work:</p>
+
+<ul>
+  <li><strong>The guest does not run continuously.</strong> It is descheduled whenever the host has other work. From inside, time appears to jump.</li>
+  <li><strong>Live migration changes the hardware underneath you.</strong> The new host's TSC has a different value and possibly a different frequency. The value the guest calibrated at boot is now wrong.</li>
+  <li><strong>Suspend and resume produce large jumps</strong> — potentially hours, if a VM is resumed long after it was suspended.</li>
+</ul>
+
+<p>Hypervisors mitigate this with paravirtualised clocks — <code>pvclock</code> for KVM and Xen guests, the TSC reference page for Hyper-V — which give the guest a stable, fixed-frequency time source that the host keeps meaningful across migration. Modern guests use these automatically and the situation is much better than it was a decade ago.</p>
+
+<p>It is still not perfect, and one practical detail catches people out: <strong>a jump large enough will make <code>ntpd</code> give up.</strong> By default it refuses to step the clock beyond a threshold, on the reasonable assumption that such a discrepancy indicates a fault rather than something to silently correct. In a VM it is routine. The <code>tinker panic 0</code> directive tells <code>ntpd</code> to step the clock regardless, and it is standard practice in virtualised guests. <code>chrony</code>, which is the better default on modern systems, handles this natively with <code>makestep</code> and generally needs less coaxing.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>The RTC in a VM is emulated, and the hypervisor owns it.</strong> A successful write from the guest does not mean a durable write.</li>
+  <li><strong>Prefer the timezone to the hardware clock.</strong> <code>timedatectl set-timezone</code> solves the actual requirement in almost every case, and it persists because it is guest-owned state.</li>
+  <li><strong>If you need a setting after every boot, apply it after every boot.</strong> A small systemd unit is more reliable than any mechanism that depends on hypervisor behaviour you cannot see.</li>
+  <li><strong>Run NTP or chrony, and expect jumps.</strong> Configure the daemon to step the clock rather than give up.</li>
+  <li><strong>When identical commands give different results, look outside the guest.</strong> The variable that mattered here was not in the operating system at all.</li>
+</ul>
+
+<h3 id="further-reading">Further reading</h3>
+
+<ul>
+  <li><a href="https://opensource.com/article/17/6/timekeeping-linux-vms">Timekeeping in Linux VMs</a> — a good explanation of TSC, pvclock and why migration breaks naive timekeeping.</li>
+  <li><a href="https://knowledge.broadcom.com/external/article/310053/timekeeping-best-practices-for-linux-gue.html">Timekeeping best practices for Linux guests</a> — including the <code>tinker panic 0</code> guidance for VMs.</li>
+  <li><a href="https://linux-kvm.org/page/FAQ">KVM FAQ on timer drift in guests</a>.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Moving Millions of Small Files Between Cloud VMs</title>
+    <meta name="description" content="Copying 188 GB spread across millions of tiny files is not a bandwidth problem, it is an IOPS and syscall problem. Why tar-then-copy was the wrong first instinct, and the one-line pipeline that fixed it.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://localhost:4000/blog/2026/03/25/Moving-Millions-of-Small-Files-Between-Cloud-VMs">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="http://localhost:4000/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Moving Millions of Small Files Between Cloud VMs</h1>
+    <p class="post-meta">Posted on March 25, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="storage">storage</a>&nbsp; -->
+    storage&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="performance">performance</a>&nbsp; -->
+    performance&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer's virtual machine would not boot. The data on its disk was intact and reachable, so the recovery plan was straightforward: attach the disk to a working instance, copy the data to a replacement VM, and rebuild.</p>
+
+<p>The data was 188 GB. That is not a large amount by modern standards — on a decent cloud network it should move in well under an hour.</p>
+
+<p>It was spread across <strong>millions of small files</strong>: a user home directory tree, source files, thumbnails, caches, per-project scratch data. That changes the problem completely, and the first approach we tried made it worse rather than better.</p>
+
+<h2 id="why-small-files-are-a-different-problem">Why small files are a different problem</h2>
+
+<p>The intuition that 188 GB is a bandwidth problem is wrong here. Moving a file is not just moving its bytes. For each one, both sides must:</p>
+
+<ul>
+  <li>look up or create a directory entry;</li>
+  <li>allocate or read an inode;</li>
+  <li>open, read or write, and close;</li>
+  <li>apply ownership, permissions and timestamps.</li>
+</ul>
+
+<p>That is a handful of syscalls and several small, scattered I/O operations per file, and none of it scales with file size. Ten million files at ten operations each is a hundred million operations regardless of whether the files are 2 KB or 2 MB.</p>
+
+<p>The consequence: <strong>the transfer is limited by IOPS and syscall overhead, not by bandwidth.</strong> A cloud disk rated at, say, 20,000 IOPS gives you a hard ceiling on how many files per second you can touch, and no amount of network capacity moves it. It is common to see a link sitting at a few percent utilisation while the copy crawls.</p>
+
+<p>Latency compounds it. Anything that does a round trip per file — <code>scp</code> in a loop, <code>rsync</code> over a slow link, a naive recursive copy — pays the round-trip time millions of times.</p>
+
+<h2 id="the-first-plan-and-why-it-was-wrong">The first plan, and why it was wrong</h2>
+
+<p>The instinct was: archive everything into one big file, transfer that at full speed, unpack on the far side. One large sequential stream instead of millions of tiny random ones — exactly the shape a network wants.</p>
+
+<pre><code>$ tar -czf /mnt/backup/data.tar.gz /mnt/vm1/data/users
+</code></pre>
+
+<p>It is a reasonable-sounding plan and it has three problems.</p>
+
+<p><strong>You need somewhere to put it.</strong> A 188 GB archive requires 188 GB of free space, which means provisioning another volume, attaching it, and paying for it.</p>
+
+<p><strong>You do the I/O twice.</strong> Every byte is read from the source disk and written to the archive, then read from the archive and written across the network, then written again on the far side. The expensive part — millions of small reads on the source — still happens in full, and now there is a large sequential write and read added to it.</p>
+
+<p><strong>Nothing overlaps.</strong> This is the real cost. The archive step must finish completely before the transfer starts, and the transfer must finish before unpacking begins. Three long phases in strict sequence, with the network idle during the first and third. Hours of elapsed time where one resource is saturated and the others do nothing.</p>
+
+<p>Compression does not rescue it either. Much of the data was already compressed — images and media — so <code>gzip</code> burned CPU for very little gain, on a single core, while everything else waited.</p>
+
+<h2 id="the-plan-that-worked">The plan that worked</h2>
+
+<p>The insight is that the archive is a means, not an end. We want the <em>stream</em> — the sequential representation of the tree — but we do not need it to exist as a file anywhere. So pipe it directly from <code>tar</code> on one side into <code>tar</code> on the other:</p>
+
+<pre><code>$ tmux new -s transfer
+
+$ tar -cf - -C /mnt/vm1/data/users . \
+    | pv -s 188G \
+    | ssh -C user@10.0.1.20 "tar -xf - -C /data/users"
+</code></pre>
+
+<p>Reading it left to right:</p>
+
+<ul>
+  <li><code>tar -cf -</code> writes the archive to standard output rather than a file.</li>
+  <li><code>-C /mnt/vm1/data/users .</code> changes directory first and archives <code>.</code>, so paths in the archive are relative. This matters: it lets you extract into a different directory on the far side, and avoids the leading-slash awkwardness of absolute paths.</li>
+  <li><code>pv -s 188G</code> passes the stream through unchanged while showing throughput, elapsed time and an ETA. With <code>-s</code> supplying the expected size, you get a genuine progress bar — worth a great deal on a multi-hour job where the alternative is staring at a cursor.</li>
+  <li><code>ssh -C</code> carries the stream to the target, compressing in transit.</li>
+  <li><code>tar -xf - -C /data/users</code> extracts from standard input directly into place on the far side.</li>
+</ul>
+
+<p>No intermediate file exists at any point. No extra disk is provisioned. And crucially, <strong>every stage runs concurrently</strong>: the source disk is reading while the network is transmitting while the target disk is writing. The pipeline runs at the speed of its slowest stage rather than the sum of three sequential phases.</p>
+
+<p>The other benefit is that the per-file overhead is paid once, on the source, in a single sequential walk of the tree. There is no per-file network round trip at all — from the network's point of view this is one long stream.</p>
+
+<h2 id="run-it-in-tmux">Run it in tmux</h2>
+
+<p>The <code>tmux new -s transfer</code> on the first line is not decoration. This job runs for hours, and if it is attached to your SSH session then a dropped connection kills it — after which you get to work out how much was transferred and how to resume, which for a <code>tar</code> stream means largely starting over.</p>
+
+<p>Inside tmux the pipeline belongs to the tmux server, not your terminal. Disconnect, reconnect later, <code>tmux attach -t transfer</code>, and the progress bar is still there.</p>
+
+<p>This applies to any long-running operation on a remote machine — filesystem checks, database imports, large builds. It is the cheapest reliability improvement available and it costs seven characters.</p>
+
+<h2 id="about--c">About <code>ssh -C</code></h2>
+
+<p>Compression in SSH is worth thinking about rather than always enabling.</p>
+
+<p><strong>Use it</strong> when the data compresses well — source code, logs, text, uncompressed databases — and when the network is the bottleneck. Trading CPU for bytes on the wire is a good deal when you have CPU to spare.</p>
+
+<p><strong>Skip it</strong> when the data is already compressed, which was largely the case here. You pay full CPU cost for a few percent reduction, and on a fast internal network the compression itself can become the limiting factor — <code>ssh -C</code> is single-threaded, so one core has to keep up with the whole stream.</p>
+
+<p>The empirical approach: run it for thirty seconds with <code>-C</code>, watch the rate in <code>pv</code>, run it without, compare. On a fast link with pre-compressed data, dropping <code>-C</code> often makes it faster.</p>
+
+<h2 id="the-storage-tier-matters-more-than-you-expect">The storage tier matters more than you expect</h2>
+
+<p>One thing this exercise made very clear: for small-file work, <strong>the disk performance tier is the dominant variable</strong>.</p>
+
+<p>Cloud block storage is sold in tiers whose IOPS ratings differ by an order of magnitude or more. For a large sequential transfer the tier barely matters — even modest volumes saturate a typical network link on sequential reads. For millions of small files, IOPS <em>is</em> the transfer rate, and the difference between a basic volume and a high-performance one can be the difference between three hours and most of a day.</p>
+
+<p>Two practical consequences:</p>
+
+<ul>
+  <li><strong>Check both ends.</strong> The target's write IOPS limits you just as surely as the source's read IOPS, and it is easy to focus on the source and forget that the destination is also doing millions of small operations.</li>
+  <li><strong>Consider a temporary upgrade.</strong> Most cloud providers let you raise a volume's performance tier without recreating it. Bumping it for the duration of a migration and lowering it afterwards is a legitimate and frequently overlooked tactic — you are paying for a few hours of high performance to save most of a day of waiting.</li>
+</ul>
+
+<h2 id="variations-worth-knowing">Variations worth knowing</h2>
+
+<p><strong>If you need to resume</strong>, use <code>rsync</code> instead. It is slower per file because it builds a file list and compares, but an interrupted run picks up where it left off:</p>
+
+<pre><code>$ rsync -aHAX --info=progress2 /mnt/vm1/data/users/ user@10.0.1.20:/data/users/
+</code></pre>
+
+<p>The flags matter for a faithful copy: <code>-H</code> preserves hard links, <code>-A</code> ACLs, <code>-X</code> extended attributes. Plain <code>-a</code> silently drops all three.</p>
+
+<p><strong>If one stream cannot saturate the link</strong>, split the work by top-level directory and run several pipelines at once. With separate <code>tmux</code> windows this is easy to manage, and it lets multiple cores handle SSH encryption in parallel — often the real ceiling on a fast network:</p>
+
+<pre><code>$ for d in a b c d; do
+    tmux new-window -d "tar -cf - -C /src/$d . | ssh user@10.0.1.20 'tar -xf - -C /dst/$d'"
+  done
+</code></pre>
+
+<p><strong>If both machines are on a fast, trusted private network</strong>, SSH's encryption overhead can dominate. <code>netcat</code> removes it entirely — receiver first, then sender:</p>
+
+<pre><code># on the target
+$ nc -l -p 9000 | tar -xf - -C /data/users
+
+# on the source
+$ tar -cf - -C /mnt/vm1/data/users . | pv -s 188G | nc 10.0.1.20 9000
+</code></pre>
+
+<p>This is unencrypted and unauthenticated. Private network between hosts you control only.</p>
+
+<h2 id="summary">Summary</h2>
+
+<ul>
+  <li><strong>Millions of small files is an IOPS problem</strong>, not a bandwidth problem. Optimise the number of operations, not the size of the pipe.</li>
+  <li><strong>Do not stage an archive you do not need.</strong> Piping <code>tar</code> into <code>tar</code> over SSH overlaps read, transfer and write, and needs no scratch space.</li>
+  <li><strong>Use tmux for anything that runs for hours.</strong></li>
+  <li><strong>Compression is a judgement call.</strong> Measure it; do not assume <code>-C</code> helps.</li>
+  <li><strong>Check the disk tier at both ends</strong>, and consider raising it temporarily for the duration of a migration.</li>
+  <li><strong><code>pv</code> is worth installing.</strong> Knowing whether a job has two hours or twelve left changes what you do next.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

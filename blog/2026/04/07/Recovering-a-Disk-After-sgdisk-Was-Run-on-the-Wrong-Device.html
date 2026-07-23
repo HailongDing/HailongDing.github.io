@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Recovering a Disk After sgdisk Was Run on the Wrong Device</title>
+    <meta name="description" content="One missing character turned a routine MBR-to-GPT conversion into a 3.2 TB filesystem reporting 64 zettabytes of free space. A step-by-step recovery that got 2.1 TB of data back intact.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="http://localhost:4000/blog/2026/04/07/Recovering-a-Disk-After-sgdisk-Was-Run-on-the-Wrong-Device">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="http://localhost:4000/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Recovering a Disk After sgdisk Was Run on the Wrong Device</h1>
+    <p class="post-meta">Posted on April 7, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="storage">storage</a>&nbsp; -->
+    storage&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="recovery">recovery</a>&nbsp; -->
+    recovery&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer's data disk had filled up. They expanded the cloud block storage volume past 2 TiB, and then discovered that the partition table on it was MBR — which cannot describe a partition larger than 2 TiB. The correct next step is to convert the disk to GPT, and <code>sgdisk -g</code> does exactly that.</p>
+
+<p>They ran:</p>
+
+<pre><code>$ sgdisk -g /dev/vdb1
+</code></pre>
+
+<p>instead of:</p>
+
+<pre><code>$ sgdisk -g /dev/vdb
+</code></pre>
+
+<p>One character. The command completed without complaint, and afterwards <code>df</code> reported the filesystem's size as roughly 64 zettabytes — the standard sign that a size field has been read as garbage and interpreted as a very large unsigned number. Two terabytes of production data was inaccessible.</p>
+
+<p>The good news, and the reason this post exists, is that <strong>all of it came back</strong>. Here is what went wrong and exactly how it was recovered.</p>
+
+<h2 id="why-that-one-character-matters">Why that one character matters</h2>
+
+<p><code>/dev/vdb</code> is a <em>device</em>. <code>/dev/vdb1</code> is a <em>partition</em> on that device — a window onto a range of blocks inside it.</p>
+
+<p>Partition tables live at the start of a device, because that is where firmware and the kernel look for them. When you tell <code>sgdisk</code> to write a GPT to <code>/dev/vdb1</code>, it does not refuse on the grounds that a partition is not a disk. It has been handed a block device and it writes a partition table to the beginning of it, exactly as instructed.</p>
+
+<p>The beginning of <code>/dev/vdb1</code>, however, is not free space. It is where the ext4 <strong>primary superblock</strong> lives — the structure describing block size, block count, inode count and the location of everything else. GPT writes a protective MBR in the first 512 bytes and its own header in the next 512. Those 1024 bytes landed directly on top of the filesystem's most important metadata.</p>
+
+<p>Hence 64 zettabytes: the kernel read a block count out of what was now GPT header data and did the arithmetic faithfully.</p>
+
+<p>The critical point for recovery is <strong>what was not touched</strong>. Only the first 1024 bytes of the partition were overwritten. The file data, the directory structure, the inode tables and the block bitmaps — everything past that first kilobyte — was untouched. This was a metadata accident, not a data accident, and ext4 keeps backup copies of exactly the metadata that was lost.</p>
+
+<h2 id="mbr-versus-gpt">MBR versus GPT, briefly</h2>
+
+<table>
+  <thead>
+    <tr><th></th><th>MBR</th><th>GPT</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Maximum partition size</td><td>2 TiB</td><td>Effectively unlimited</td></tr>
+    <tr><td>Partition table copies</td><td>One, at the start</td><td>Primary at start, backup at end</td></tr>
+    <tr><td>Integrity checking</td><td>None</td><td>CRC32 on headers and entries</td></tr>
+  </tbody>
+</table>
+
+<p>The 2 TiB limit is not arbitrary: MBR stores the starting sector and length as 32-bit values, and 2<sup>32</sup> sectors of 512 bytes is 2 TiB. Any time you grow a volume past that mark, MBR stops being an option.</p>
+
+<h2 id="the-recovery">The recovery</h2>
+
+<p>A warning before the commands: <strong>take a snapshot of the volume first.</strong> Every step below writes to the disk, and if something goes wrong mid-way you want the option to start over. Cloud block storage makes this cheap and it takes a minute. It is the single highest-value action available in a situation like this, and it is worth taking even though — perhaps especially because — you are under pressure to just fix it.</p>
+
+<h3 id="step-0-stop-the-disk-from-breaking-the-boot">Step 0: stop the disk from breaking the boot</h3>
+
+<p>Comment out the data disk's entry in <code>/etc/fstab</code>:</p>
+
+<pre><code># /dev/vdb1  /data  ext4  defaults  0  2
+</code></pre>
+
+<p>A corrupted filesystem in <code>fstab</code> can cause the boot to fail or drop into emergency mode, which turns a data problem into an availability problem while you are still working out what happened. Do this before any reboot.</p>
+
+<h3 id="step-1-find-the-backup-superblocks">Step 1: find the backup superblocks</h3>
+
+<pre><code>$ sudo mke2fs -n /dev/vdb1
+</code></pre>
+
+<p>This looks alarming, and it is worth being precise about why it is safe. The <code>-n</code> flag means <em>dry run</em>: <code>mke2fs</code> calculates the layout it <em>would</em> create and prints it, without writing anything. Because superblock backup placement is deterministic — derived from block size and filesystem geometry — the offsets it prints for a filesystem it would create with the same parameters are the offsets your existing backups are actually at.</p>
+
+<p>The output ends with a list like:</p>
+
+<pre><code>Superblock backups stored on blocks:
+    32768, 98304, 163840, 229376, 294912, 819200, 884736, ...
+</code></pre>
+
+<p>Do not omit the <code>-n</code>. Without it this command formats the disk.</p>
+
+<h3 id="step-2-erase-the-gpt-header-written-onto-the-partition">Step 2: erase the GPT header written onto the partition</h3>
+
+<pre><code>$ sudo dd if=/dev/zero of=/dev/vdb1 bs=512 count=2
+$ sudo partprobe /dev/vdb
+</code></pre>
+
+<p>This zeroes the first 1024 bytes of the partition — the protective MBR and GPT header that should never have been there. We are not destroying filesystem data; that space is already ruined, and clearing it prevents anything from trying to interpret it as a valid partition table later.</p>
+
+<p>Check <code>of=</code> twice before pressing return. <code>of=/dev/vdb</code> here would wipe the real partition table.</p>
+
+<h3 id="step-3-restore-the-superblock-from-a-backup">Step 3: restore the superblock from a backup</h3>
+
+<pre><code>$ sudo e2fsck -fy -b 32768 /dev/vdb1
+</code></pre>
+
+<p><code>-b 32768</code> tells <code>e2fsck</code> to ignore the primary superblock and use the backup at block 32768 instead. Having a consistent superblock to work from, it rebuilds the primary one and reconciles the filesystem against it. <code>-f</code> forces the check even though the filesystem believes itself clean, and <code>-y</code> answers yes to the questions it will ask.</p>
+
+<p>This is the moment the filesystem becomes describable again. If block 32768 does not work, try the next offset from the list in step 1.</p>
+
+<h3 id="step-4-do-the-conversion-properly-and-grow-the-partition">Step 4: do the conversion properly, and grow the partition</h3>
+
+<pre><code>$ sudo sgdisk -g /dev/vdb
+$ sudo growpart /dev/vdb 1
+</code></pre>
+
+<p>The original goal, on the device this time. <code>sgdisk -g</code> converts the disk to GPT, and <code>growpart</code> extends partition 1 to fill the newly available space.</p>
+
+<h3 id="step-5-full-filesystem-check">Step 5: full filesystem check</h3>
+
+<pre><code>$ tmux new -s recovery
+$ sudo e2fsck -fyy -C 0 /dev/vdb1
+</code></pre>
+
+<p>Now check the whole filesystem properly. On a multi-terabyte volume this runs for a long time — hours is normal — so start it inside <code>tmux</code> or <code>screen</code>. If your SSH session drops during an unprotected <code>e2fsck</code>, the process dies with it, potentially mid-write. <code>-C 0</code> prints a progress bar, which matters mostly for your own sanity.</p>
+
+<p>The doubled <code>-yy</code> answers yes to every prompt including the ones <code>-y</code> alone will still stop on.</p>
+
+<h3 id="step-6-resize-the-filesystem-into-the-larger-partition">Step 6: resize the filesystem into the larger partition</h3>
+
+<pre><code>$ sudo resize2fs /dev/vdb1
+</code></pre>
+
+<p>The partition is now bigger, but the filesystem inside it still describes its old size. With no size argument, <code>resize2fs</code> grows it to fill the partition.</p>
+
+<h3 id="step-7-mount-and-verify">Step 7: mount somewhere harmless and verify</h3>
+
+<pre><code>$ sudo mount /dev/vdb1 /mnt/recovery_test
+$ df -TH
+</code></pre>
+
+<p>Mount to a scratch directory rather than the production path, so you can inspect the result without anything starting to write to it. Confirm the size is sensible, spot-check some files, then restore the <code>fstab</code> entry and mount properly.</p>
+
+<p>The final state: 3.2 TB total, 2.1 TB used at 69% — every byte of the customer's data present and readable.</p>
+
+<h2 id="why-this-worked">Why this worked</h2>
+
+<p>Recovery was possible because of a design decision made in the ext filesystem family a long time ago: <strong>the superblock is replicated across the disk</strong>. The primary copy at the start is the one that gets used, and it is also the one most exposed to accidents at the start of the device — bad partition commands, stray <code>dd</code>, a bootloader install pointed at the wrong target. The backups sit at predictable intervals deep inside the filesystem where almost nothing writes by accident.</p>
+
+<p>The chain of reasoning that made the recovery straightforward:</p>
+
+<ul>
+  <li>Only the first 1024 bytes were overwritten.</li>
+  <li>Those bytes held metadata, not file contents.</li>
+  <li>ext4 keeps copies of that metadata at known offsets.</li>
+  <li>Therefore restore the metadata and the data becomes reachable again.</li>
+</ul>
+
+<p>None of this would help against a real data-destroying accident — <code>mkfs</code> on a live filesystem, or <code>dd</code> across a large range. The reason a corrupted partition table so often looks like total loss and so often is not is that partition tables are tiny and the data is enormous.</p>
+
+<h2 id="lessons">Lessons</h2>
+
+<ul>
+  <li><strong>Snapshot before touching partition tables.</strong> It costs a minute. This entire incident would have been a five-minute rollback.</li>
+  <li><strong>Device or partition — read the argument out loud.</strong> <code>sgdisk</code>, <code>parted</code> and <code>fdisk</code> operate on devices (<code>/dev/vdb</code>). <code>mkfs</code>, <code>e2fsck</code> and <code>resize2fs</code> operate on partitions (<code>/dev/vdb1</code>). Getting it backwards in either direction destroys something.</li>
+  <li><strong>The tools will not save you.</strong> <code>sgdisk -g /dev/vdb1</code> is a syntactically valid request that the tool has no way to know is a mistake. There is no confirmation prompt for "are you sure this is a whole disk".</li>
+  <li><strong>Past 2 TiB, MBR is not an option</strong> — plan the GPT conversion as part of the expansion, not as a surprise afterwards.</li>
+  <li><strong>Long-running recovery commands belong in tmux.</strong> An <code>e2fsck</code> killed halfway through by a dropped connection can leave you worse off than when you started.</li>
+  <li><strong>A weird number in <code>df</code> is a metadata problem, not a data problem.</strong> 64 ZB, negative sizes, absurd inode counts — these mean a structure was misread, and misread structures are frequently recoverable. Do not conclude the data is gone.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>
