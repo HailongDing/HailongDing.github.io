@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Out of Inodes, Not Space: A Filesystem Killed by a Mail Loop</title>
+    <meta name="description" content="A VM went read-only with gigabytes free but zero inodes left. The cause: a PHP script that emailed on every error, could not deliver the mail, and restarted instantly — an error handler manufacturing the exact exhaustion it warned about.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2025/07/29/Out-of-Inodes-Not-Space-A-Filesystem-Killed-by-a-Mail-Loop">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Out of Inodes, Not Space: A Filesystem Killed by a Mail Loop</h1>
+    <p class="post-meta">Posted on July 29, 2025  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="filesystems">filesystems</a>&nbsp; -->
+    filesystems&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="troubleshooting">troubleshooting</a>&nbsp; -->
+    troubleshooting&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer's cloud VM suddenly refused SSH logins. With their permission we got in through the VNC console, and the moment we tried to do anything that touched disk, the problem announced itself: the filesystem could not be written to. It had gone read-only.</p>
+
+<p>What followed was a satisfying chain — read-only root, plenty of free space but zero free inodes, a directory stuffed with millions of tiny files, and at the bottom of it all a PHP script caught in a loop it did not know it was in.</p>
+
+<h2 id="the-serial-log">The serial log: a read-only root</h2>
+
+<p>The serial console log showed the root filesystem had been mounted read-only after the kernel detected it needed recovery:</p>
+
+<pre><code>EXT3-fs (vda1): recovery required on readonly filesystem
+EXT3-fs (vda1): write access will be enabled during recovery
+kjournald starting.  Commit interval 5 seconds
+EXT3-fs (vda1): orphan cleanup on readonly fs
+EXT3-fs (vda1): 26 orphan inodes deleted
+EXT3-fs (vda1): recovery complete
+EXT3-fs (vda1): mounted filesystem with ordered data mode
+</code></pre>
+
+<p>When a filesystem hits an error condition it cannot safely continue through, the kernel's default is to remount it read-only to protect what is there. A read-only root explains everything upstream: SSH could not write session state, login machinery could not create the files it needs, and the box became effectively unusable while still being "up." (The root here was <code>ext3</code>; the data disk, as it turned out, was <code>ext4</code>.)</p>
+
+<h2 id="space-vs-inodes">Space was fine. Inodes were gone.</h2>
+
+<p>We booted into rescue mode and mounted the disk under <code>/mnt/vm1</code> to inspect it without the OS fighting back. <code>df -h</code> looked healthy — plenty of free gigabytes. But <code>df -i</code> told the real story:</p>
+
+<pre><code>$ df -h /mnt/vm1        # space: lots free
+$ df -i /mnt/vm1        # inodes: 100% used
+Filesystem      Inodes   IUsed  IFree IUse%
+/dev/...        ...      ...        0  100%
+</code></pre>
+
+<p>This is a failure mode that surprises people, so it is worth being precise about the mechanism.</p>
+
+<p>A traditional Linux filesystem like ext3/ext4 allocates its <strong>inodes at format time</strong>. An inode is the metadata record for a single file or directory — owner, permissions, timestamps, and pointers to the data blocks. The filesystem sets aside a fixed number of them based on the volume size, on the assumption of an "average" file size. Two independent resources can therefore run out:</p>
+
+<ul>
+  <li><strong>Data blocks</strong> — run out and you have "no space left," the familiar case. Reported by <code>df -h</code>.</li>
+  <li><strong>Inodes</strong> — run out and you cannot create a single new file <em>even with terabytes of free space</em>, because there is no metadata record left to describe it. Reported by <code>df -i</code>.</li>
+</ul>
+
+<p>Every file, no matter how small — even a zero-byte file — consumes exactly one inode. So a workload that creates enormous numbers of tiny files exhausts inodes long before it exhausts space. The error the application sees is <code>ENOSPC</code> ("No space left on device"), which is thoroughly misleading: there is space; there are just no inodes. <strong>Always check <code>df -i</code> when a "disk full" error appears on a disk that clearly is not full.</strong></p>
+
+<h2 id="finding-the-files">Finding the offending directory</h2>
+
+<p>The next question is <em>where</em> all the files are. Counting files per directory finds the hotspot:</p>
+
+<pre><code># which directory holds the most files
+$ find /mnt/vm1 -xdev -type f | cut -d/ -f1-5 | sort | uniq -c | sort -rn | head
+</code></pre>
+
+<p>One directory dominated — millions of files. Clearing it immediately restored the inode count to normal, and the filesystem was healthy again.</p>
+
+<p>Except it did not stay healthy. After a reboot and a while running, the same directory filled up again, and the machine failed the same way. Deleting the files treated the symptom; something was actively generating them.</p>
+
+<h2 id="catching-the-culprit">Catching the culprit with atop</h2>
+
+<p>Platform-side monitoring gave the first real clue: the guest's <strong>process count was climbing continuously</strong>, and the failure reproduced right when the process count peaked. So whatever was making the files was also spawning processes without bound — the two were the same runaway.</p>
+
+<p>To catch it in the act we cleared the directory again and deployed <a href="https://www.atoptool.nl/">atop</a>, which samples process activity at intervals and, crucially, records <em>short-lived</em> processes that a live <code>top</code> would never catch. That surfaced a <strong>PHP process</strong> churning away.</p>
+
+<h2 id="the-loop">The loop</h2>
+
+<p>Piecing it together, the mechanism was a self-sustaining loop:</p>
+
+<ol>
+  <li>The PHP program hit an execution error.</li>
+  <li>On error, it tried to <strong>send an email</strong> — a notification about the failure.</li>
+  <li>The email could not be delivered, so it was queued: a file appeared under <code>/var/spool/postfix/maildrop</code>.</li>
+  <li>The process then <strong>restarted immediately</strong>, hit the same error, and sent another undeliverable mail — another file.</li>
+</ol>
+
+<p>Round and round, as fast as the machine allowed. Each iteration left one more file in the mail spool. Given a directory accumulating files at that rate, inode exhaustion was only a matter of time — and because the failure notification was itself failing, the "error handler" had become the error, generating exactly the condition it was meant to warn about.</p>
+
+<p>There is a nasty positive-feedback quality to it: the more it failed, the more mail it tried to send, the more files it created, the closer the filesystem got to the wall that would make <em>everything</em> fail.</p>
+
+<h2 id="the-fix">The fix</h2>
+
+<ul>
+  <li><strong>Break the loop.</strong> The real fix is in the application: do not retry instantly and unconditionally on error, and do not emit an undeliverable email on every failure. Add backoff, a retry cap, and a circuit breaker so a persistent failure does not become an infinite one.</li>
+  <li><strong>Fix mail delivery, or stop queuing.</strong> If the mail cannot be delivered, the spool grows forever. Either make delivery work or configure the app not to enqueue mail it cannot send.</li>
+  <li><strong>Drain the spool.</strong> Clear the accumulated <code>maildrop</code> files to recover the inodes immediately.</li>
+  <li><strong>Monitor inodes, not just space.</strong> Alert on <code>df -i</code> reaching a high-water mark. Inode exhaustion is invisible to the usual "disk usage" alarms, which is why this ran all the way to failure.</li>
+  <li><strong>Cap process count.</strong> A per-user process limit (<code>ulimit -u</code> / cgroup <code>pids.max</code>) turns "runaway loop takes down the box" into "runaway loop hits a ceiling and gets noticed."</li>
+</ul>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>"No space left" on a disk that isn't full means inodes.</strong> Check <code>df -i</code> before <code>df -h</code> when the numbers don't add up.</li>
+  <li><strong>ext3/ext4 fix their inode count at format time.</strong> Many small files exhaust inodes long before blocks; every file costs one inode regardless of size.</li>
+  <li><strong>A read-only remount is the kernel protecting the filesystem.</strong> It explains SSH/login failures on a machine that is otherwise "up."</li>
+  <li><strong>Deleting the files is not the fix if something is creating them.</strong> Use <code>atop</code> to catch short-lived processes, and correlate with a climbing process count.</li>
+  <li><strong>A failing error handler is the worst kind.</strong> An undeliverable error-notification loop manufactured the exact resource exhaustion it existed to warn about.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

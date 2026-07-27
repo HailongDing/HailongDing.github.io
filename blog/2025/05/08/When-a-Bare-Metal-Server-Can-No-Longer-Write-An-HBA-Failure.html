@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: When a Bare-Metal Server Can No Longer Write: An HBA Failure</title>
+    <meta name="description" content="A bare-metal server started refusing writes. A worked example of reading down the stack — application log to system messages to the kernel ring buffer — until the driver errors named a failed host bus adapter.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2025/05/08/When-a-Bare-Metal-Server-Can-No-Longer-Write-An-HBA-Failure">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>When a Bare-Metal Server Can No Longer Write: An HBA Failure</h1>
+    <p class="post-meta">Posted on May 8, 2025  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="hardware">hardware</a>&nbsp; -->
+    hardware&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="storage">storage</a>&nbsp; -->
+    storage&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="troubleshooting">troubleshooting</a>&nbsp; -->
+    troubleshooting&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A bare-metal server started refusing writes. Applications that tried to save data failed, the filesystem misbehaved, and the machine was clearly unwell — but it was not obvious why. This one is short, because the value is in the diagnostic path rather than a clever fix: it is a worked example of reading down the stack, from the application's complaint to the piece of hardware actually at fault.</p>
+
+<h2 id="layer-1-the-application-log">Layer 1: the application log</h2>
+
+<p>The starting point was the customer's own application logs inside the OS, which showed write operations failing. That tells you <em>something</em> is wrong, but an application-level write error is the least specific signal there is — it could be a full disk, a read-only filesystem, permissions, a quota, or hardware. An application only knows that a <code>write()</code> came back with an error; it cannot see why.</p>
+
+<p>So the application log is where you <em>start</em>, never where you stop. The job is to keep descending until the layers stop pointing further down.</p>
+
+<h2 id="layer-2-system-messages">Layer 2: system messages</h2>
+
+<p>Next was <code>/var/log/messages</code>, which sits below the application and records what the operating system itself noticed. Here the errors were more specific — the kernel was logging I/O problems, not just an application unhappy about a failed save. That confirmed the fault was below the application layer: this was the storage stack failing, not a bug in the customer's code or a full volume.</p>
+
+<h2 id="layer-3-the-kernel-ring-buffer">Layer 3: the kernel ring buffer</h2>
+
+<p>Then <code>dmesg</code>, the kernel's ring buffer, which carries the lowest-level messages the kernel emits — including what device drivers report. This is where the trail ended, because the driver errors named the culprit directly: the messages pointed at the <strong>HBA (Host Bus Adapter)</strong> — the card that connects the server to its storage.</p>
+
+<p>The HBA had failed. With the adapter faulting, I/O to the disks behind it could not complete, which the kernel surfaced as I/O errors in <code>messages</code>, which the application experienced as writes that would not go through. Every symptom up the stack was a faithful echo of one hardware failure at the bottom.</p>
+
+<h2 id="why-the-order-matters">Why the top-down order matters</h2>
+
+<p>It is tempting, once you suspect hardware, to jump straight to <code>dmesg</code>. The reason to walk the layers in order anyway is that each one tells you whether to keep going and in which direction:</p>
+
+<ul>
+  <li><strong>Application log</strong> — <em>that</em> something is wrong, and roughly what operation. (Writes failing.)</li>
+  <li><strong>System log (<code>messages</code>)</strong> — whether the OS itself sees a problem. If the OS is happy, look back up at the application; if the OS reports I/O errors, keep going down. (It reported I/O errors.)</li>
+  <li><strong>Kernel buffer (<code>dmesg</code>)</strong> — the raw driver- and device-level truth, where a failing controller announces itself. (HBA errors.)</li>
+</ul>
+
+<p>Walking it in order also stops you misattributing the cause. A read-only filesystem, for instance, produces very similar application-level symptoms but has a completely different signature in <code>messages</code> and <code>dmesg</code>. Letting each layer either implicate or exonerate the one below keeps you from fixing the wrong thing.</p>
+
+<h2 id="what-an-hba-is">What an HBA is, and why its failure is total</h2>
+
+<p>The HBA is the interface card between the server and its storage — SAS/SATA drives or a storage fabric. Everything the machine reads or writes to those disks passes through it. When it fails, it does not usually degrade gracefully; it takes down access to <em>everything</em> behind it at once. That is why the symptom was systemic — not one bad file or one bad disk, but writes failing broadly — and why the fix is replacement, not repair. On a bare-metal machine that means swapping the physical card (or migrating the workload to healthy hardware); there is no software remedy for a dead adapter.</p>
+
+<p>This is also a reminder of what "bare metal" costs you. On a virtual machine, this class of hardware failure is the provider's problem — the hypervisor abstracts the storage adapter away and a failing host triggers a migration underneath you. On bare metal you get the performance and isolation of dedicated hardware, and in exchange you own the physical fault domain: a failed HBA is now visible to you and yours to resolve.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>Diagnose top-down: application log → <code>messages</code> → <code>dmesg</code>.</strong> Each layer tells you whether the fault is above or below it, and points you at the next place to look.</li>
+  <li><strong>An application write error is a symptom, not a diagnosis.</strong> The app only knows the write failed; the cause lives further down.</li>
+  <li><strong><code>dmesg</code> is where hardware confesses.</strong> Driver and device errors — like a failing HBA — surface here when higher layers only show generic I/O failures.</li>
+  <li><strong>An HBA failure is systemic.</strong> It affects all storage behind the adapter at once, and the fix is replacement — a cost that is yours to bear on bare metal but the provider's on a VM.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

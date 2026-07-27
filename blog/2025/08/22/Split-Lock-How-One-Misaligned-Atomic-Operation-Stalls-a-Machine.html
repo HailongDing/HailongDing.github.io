@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Split-Lock: How One Misaligned Atomic Operation Stalls a Machine</title>
+    <meta name="description" content="A cloud VM dropped packets in bursts. The cause was not the network but split-lock: an atomic operation straddling two cache lines forces the CPU to lock the whole memory bus, stalling every core on the socket for thousands of cycles.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2025/08/22/Split-Lock-How-One-Misaligned-Atomic-Operation-Stalls-a-Machine">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Split-Lock: How One Misaligned Atomic Operation Stalls a Machine</h1>
+    <p class="post-meta">Posted on August 22, 2025  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="hardware">hardware</a>&nbsp; -->
+    hardware&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="performance">performance</a>&nbsp; -->
+    performance&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux kernel">linux kernel</a>&nbsp; -->
+    linux kernel&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer reported packet loss on their cloud VM — elevated PPS drops, and business-level latency jitter to go with it. The network graphs showed the symptom clearly enough, but the cause was not in the network at all. It was in the CPU, and it has a name worth knowing: <strong>split-lock</strong>.</p>
+
+<p>This post is less about the specific incident and more about the mechanism, because split-lock is one of those low-level phenomena that produces high-level symptoms — latency, jitter, packet loss — that look like they must be a networking or scheduling problem. Once you know it exists, you recognise the fingerprint.</p>
+
+<h2 id="the-symptom">The symptom</h2>
+
+<p>During the affected windows, the customer's own monitoring showed jitter — throughput and latency wobbling rather than holding steady. The platform-side metrics for the same moments confirmed packet drops. Two views, same conclusion: the machine was periodically failing to keep up, in short bursts, and dropping packets when it did.</p>
+
+<p>Bursty, periodic stalls are the tell. A steady overload looks like a flat ceiling; split-lock looks like brief, sharp hitches — the machine freezes for a moment, catches up, freezes again.</p>
+
+<h2 id="what-a-split-lock-is">What a split-lock is</h2>
+
+<p>To understand split-lock you need two ideas: atomic operations and cache lines.</p>
+
+<p>Modern CPUs guarantee that certain memory operations are <strong>atomic</strong> — they complete indivisibly, so two cores cannot interleave and corrupt a shared value. Atomics are the foundation of locks, counters, and reference counts; they are everywhere in concurrent code.</p>
+
+<p>Memory is moved between RAM and the CPU in fixed-size chunks called <strong>cache lines</strong> — 64 bytes on x86. Normally the CPU makes an atomic operation atomic cheaply, by locking just the relevant cache line while it works (a "cache lock"). Fast, contained, invisible.</p>
+
+<p>The trouble comes when the data an atomic operation touches is <strong>split across two adjacent cache lines</strong> — the value straddles the 64-byte boundary. Now the cheap trick does not work: you cannot lock a single cache line, because the data lives in two. To preserve atomicity the CPU falls back to a much heavier hammer — it <strong>locks the entire memory bus</strong> (a bus lock) for the duration of the operation.</p>
+
+<p>That bus lock is the split-lock. And locking the bus is not a local event.</p>
+
+<h2 id="why-it-hurts-so-much">Why one operation hurts the whole machine</h2>
+
+<p>A cache lock affects one cache line. A <em>bus</em> lock affects <strong>every core on the socket</strong>. While the bus is locked, all other memory traffic stalls — every other core wanting to touch memory has to wait for the split-lock to finish.</p>
+
+<p>So a single misaligned atomic on one thread imposes a pause on the entire machine. One operation, and everyone stops. A single split-lock can cost on the order of thousands of cycles — orders of magnitude more than a normal atomic — and if a program does this in a hot loop, the machine spends a meaningful fraction of its time frozen mid-stride.</p>
+
+<p>That directly explains the customer's symptoms. Packet processing is timing-sensitive and runs on the same cores as everything else. When the bus locks, packet handling stalls along with everything else; buffers back up; and when they overflow, packets drop. The "network problem" was a CPU stall wearing a network costume.</p>
+
+<h2 id="how-it-happens-in-practice">How does the data get misaligned?</h2>
+
+<p>Split-locks come from atomic operations on data that is not naturally aligned. In practice that traces back to things like:</p>
+
+<ul>
+  <li><strong>Packed structures</strong> — code that disables the compiler's natural alignment (for wire formats or to save memory) can place a multi-byte field across a cache-line boundary, and then perform an atomic on it.</li>
+  <li><strong>Hand-written or generated assembly</strong> that assumes alignment it does not enforce.</li>
+  <li><strong>Manual memory management</strong> that hands out buffers without honouring alignment for fields later used atomically.</li>
+</ul>
+
+<p>It is almost always a subtle bug in a specific program, not a system misconfiguration. The program works correctly — the atomic still <em>is</em> atomic — it just achieves that correctness in the most expensive way the hardware offers, and everyone else on the socket pays for it.</p>
+
+<h2 id="detecting-it">Detecting it</h2>
+
+<p>The good news is that modern kernels can detect split-locks directly, using a CPU feature (bus-lock / split-lock detection) that traps the event. The kernel documentation covers the interface in full — see <a href="https://www.kernel.org/doc/html/v6.3/x86/buslock.html">Bus lock detection and handling</a> — but the essentials:</p>
+
+<ul>
+  <li>The kernel can be configured to <strong>warn</strong> when a split-lock occurs, logging the offending process. This is how you turn an invisible whole-machine stall into a named culprit.</li>
+  <li>It can also be configured to <strong>rate-limit</strong> offenders (throttling a process that triggers them repeatedly) or to <strong>kill</strong> them outright, depending on the <code>split_lock_detect</code> policy.</li>
+  <li>Watch <code>dmesg</code> for split-lock / bus-lock warnings once detection is enabled — the log names the process, which points you straight at the code to fix.</li>
+</ul>
+
+<p>Once you have the offending process, the real fix is in that code: align the data so the atomic stays within a single cache line. Alignment is a property of the program, so the durable remedy is a code change; the kernel's rate-limiting is a way to contain the blast radius in the meantime.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>Split-lock symptoms masquerade as networking or scheduling problems.</strong> Bursty packet loss and latency jitter can be a CPU stall, not a network fault.</li>
+  <li><strong>An atomic straddling two cache lines forces a bus lock.</strong> The CPU can't lock a single line, so it locks the whole bus.</li>
+  <li><strong>A bus lock stalls every core on the socket.</strong> One misaligned atomic on one thread pauses the entire machine — thousands of cycles per event.</li>
+  <li><strong>The root cause is misaligned data, usually from packed structs or manual memory layout.</strong> The program is correct but pathologically expensive.</li>
+  <li><strong>Modern kernels can detect and name offenders.</strong> Enable split-lock detection, watch <code>dmesg</code>, then fix the alignment in the offending code.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

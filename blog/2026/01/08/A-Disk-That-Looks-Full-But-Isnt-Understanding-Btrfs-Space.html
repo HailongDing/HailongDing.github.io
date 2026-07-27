@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: A Disk That Looks Full But Isn’t: Understanding Btrfs Space</title>
+    <meta name="description" content="A Btrfs disk reported large usage with little data on it. Duplicated metadata and underused chunks explained part of it; a real filesystem error — betrayed by space only returning after a reboot — explained the rest.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2026/01/08/A-Disk-That-Looks-Full-But-Isnt-Understanding-Btrfs-Space">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>A Disk That Looks Full But Isn’t: Understanding Btrfs Space</h1>
+    <p class="post-meta">Posted on January 8, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="filesystems">filesystems</a>&nbsp; -->
+    filesystems&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="storage">storage</a>&nbsp; -->
+    storage&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="troubleshooting">troubleshooting</a>&nbsp; -->
+    troubleshooting&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer asked a reasonable question: a disk (<code>/dev/vdd</code>) that had no data on it was reporting a large amount of used space. Where was it going?</p>
+
+<p>The disk was a Btrfs filesystem, mounted under a Docker data directory. The answer involved two separate things stacked on top of each other — how Btrfs accounts for space, and an actual filesystem error underneath — and untangling them is a good tour of why "used space" on a modern filesystem is not a single simple number.</p>
+
+<h2 id="the-picture">The starting picture</h2>
+
+<p>The disk was reporting significant usage. Inspecting it showed a Btrfs filesystem mounted at the container runtime's data root, and the standard tools pointed at the directories consuming the most space. So far, so ordinary — except the customer was adamant the volume held little actual data, and the numbers did not match that.</p>
+
+<p>The first thing to understand is that on Btrfs, <code>df</code> is not the whole truth. Btrfs manages space in a two-level scheme that <code>df</code> flattens and, in some situations, reports misleadingly. You need the filesystem's own accounting tools to see what is really going on.</p>
+
+<h2 id="how-btrfs-uses-space">How Btrfs allocates space</h2>
+
+<p>Btrfs does not hand raw blocks straight to files. It works in two stages:</p>
+
+<ul>
+  <li>It carves the device into large <strong>chunks</strong> (block groups), each dedicated to a type: <em>data</em>, <em>metadata</em>, or <em>system</em>.</li>
+  <li>Files are then written into the data chunks; the filesystem's own bookkeeping lives in the metadata chunks.</li>
+</ul>
+
+<p>Crucially, <strong>metadata is redundant by default.</strong> On a single device Btrfs uses the <code>DUP</code> profile for metadata — it keeps <em>two</em> copies of all metadata, so a localised corruption of one copy can be repaired from the other. That redundancy costs space, and it is space that holds no user data at all. This is by design and is one of Btrfs's resilience features, but it means "used" includes duplicated bookkeeping that a naive reading would not expect.</p>
+
+<p>To see the real breakdown you use Btrfs's own commands rather than <code>df</code>:</p>
+
+<pre><code># chunk-level allocation: how much is data vs metadata (note DUP), and used vs total
+$ sudo btrfs filesystem usage /mnt/point
+
+# per-type summary
+$ sudo btrfs filesystem df /mnt/point
+</code></pre>
+
+<p>These distinguish two very different quantities that <code>df</code> conflates: space <strong>allocated</strong> to chunks, versus space actually <strong>used</strong> within those chunks. A chunk that has been allocated for data but is mostly empty still counts as "allocated," which can make the disk look fuller than the live data justifies.</p>
+
+<h2 id="the-docker-layer">The Docker layer: reclaimable images</h2>
+
+<p>Because this Btrfs volume backed a container runtime, a chunk of the "usage" was reclaimable container data — old image layers, stopped containers, build cache. The container runtime reported how much of that was reclaimable:</p>
+
+<pre><code>$ docker system df          # shows RECLAIMABLE per category
+$ docker system prune -a    # reclaim unused images, networks, build cache
+</code></pre>
+
+<p>Reclaiming it freed real space — but not as much as expected. After the prune, a substantial amount of space was <em>still</em> reported as used. This is where the two explanations separate: some of the "used" space was reclaimable container junk (now gone), but some of it was not being released even though it should have been.</p>
+
+<h2 id="the-part-that-didnt-add-up">The part that didn't add up</h2>
+
+<p>Even after pruning containers and asking Btrfs to reclaim, the available space stubbornly plateaued — it would not climb past a certain figure, no matter what we freed. On a healthy filesystem, deleting data and reclaiming chunks should return that space to the free pool. It wasn't happening.</p>
+
+<p>Two more tools come into play here:</p>
+
+<pre><code># reclaim partially-used data chunks by rewriting them fuller (balance)
+$ sudo btrfs balance start -dusage=50 /mnt/point
+</code></pre>
+
+<p>A <strong>balance</strong> consolidates partially-filled chunks — it rewrites the live data from mostly-empty data chunks into fewer, fuller ones and returns the emptied chunks to the free pool. This is the normal cure for "Btrfs says it's full but the data doesn't justify it," which happens when data ends up spread thinly across many allocated-but-underused chunks. It helped somewhat, but the space still capped out below what the accounting said should be free.</p>
+
+<p>Then a simple experiment settled it: <strong>we rebooted the machine, and afterwards the available space jumped up.</strong> A plain reboot recovering space is not normal Btrfs behaviour — a well filesystem does not need a restart to release space it has already been told to free. That reboot-fixes-it signature pointed at filesystem state that had gotten stuck, not merely at allocation accounting.</p>
+
+<h2 id="the-actual-fault">The actual fault: a filesystem error</h2>
+
+<p>On investigation, the filesystem did indeed have an error. So the customer's problem was really <em>two</em> problems wearing one symptom:</p>
+
+<ol>
+  <li><strong>Expected Btrfs behaviour</strong> — duplicated metadata and allocated-but-underused chunks made the disk look fuller than the live data implied. This is normal and is addressed with prune + balance.</li>
+  <li><strong>An actual filesystem error</strong> — which was preventing space from being released properly and only cleared on reboot. This is not normal and is the real defect.</li>
+</ol>
+
+<p>The lesson is not to stop at the first plausible explanation. "Btrfs over-reports usage" is true and would have been a satisfying-sounding answer — but it only accounted for part of the numbers. The residual, and the tell-tale reboot recovery, revealed a genuine fault sitting underneath the expected accounting quirk.</p>
+
+<h2 id="checking-and-fixing">Checking and fixing</h2>
+
+<pre><code># look for reported errors on each device (per-device error counters)
+$ sudo btrfs device stats /mnt/point
+
+# scrub verifies checksums of all data and metadata, repairing from the DUP copy where possible
+$ sudo btrfs scrub start /mnt/point
+$ sudo btrfs scrub status /mnt/point
+
+# offline structural check (unmount first; --repair is a last resort, snapshot beforehand)
+$ sudo btrfs check /dev/vdd
+</code></pre>
+
+<p>A <code>scrub</code> reads everything and verifies checksums, repairing bad metadata from its duplicate copy — which is exactly what the <code>DUP</code> profile exists for. Persistent structural problems may need an offline <code>btrfs check</code>, and if that reaches the point of <code>--repair</code>, snapshot the volume first — repair operations can make things worse.</p>
+
+<h2 id="the-cloud-angle">The cloud angle</h2>
+
+<p>One practical recommendation came out of this. On a cloud platform, prefer <strong>cloud block storage</strong> for this kind of workload: it can be expanded online when you are genuinely short of space, and it supports snapshots, so you can capture a known-good state before risky operations like a filesystem repair — and roll back if a repair goes wrong. Whatever filesystem you run on top, having cheap snapshots underneath turns "attempt a risky repair and hope" into "snapshot, attempt, roll back if needed."</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>On Btrfs, <code>df</code> lies by omission.</strong> Use <code>btrfs filesystem usage</code> / <code>df</code> to separate allocated chunks from used space, and remember metadata is duplicated (<code>DUP</code>) by default.</li>
+  <li><strong>"Full but shouldn't be" is often underused chunks.</strong> A <code>balance</code> consolidates them and returns space to the free pool.</li>
+  <li><strong>Container runtimes hoard reclaimable data.</strong> Old image layers and build cache count as used until pruned.</li>
+  <li><strong>Don't stop at the first explanation.</strong> Expected Btrfs accounting explained part of it; a real filesystem error — betrayed by space only returning after a reboot — explained the rest.</li>
+  <li><strong>Snapshot before you repair.</strong> Cloud block storage with snapshots makes risky filesystem operations reversible.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

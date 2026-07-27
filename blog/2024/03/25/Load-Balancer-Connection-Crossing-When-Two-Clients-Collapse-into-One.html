@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Load-Balancer “Connection Crossing”: When Two Clients Collapse into One</title>
+    <meta name="description" content="Two servers failed at the same instant, sharing one backend pool behind two load balancers. Source-IP pass-through can make two separate connections look identical to a backend — five conditions cause it, and breaking any one prevents it.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2024/03/25/Load-Balancer-Connection-Crossing-When-Two-Clients-Collapse-into-One">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Load-Balancer “Connection Crossing”: When Two Clients Collapse into One</h1>
+    <p class="post-meta">Posted on March 25, 2024  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="networking">networking</a>&nbsp; -->
+    networking&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="load balancing">load balancing</a>&nbsp; -->
+    load balancing&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="cloud">cloud</a>&nbsp; -->
+    cloud&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>Two servers started experiencing communication problems at the same moment. Nothing obvious tied them together at first — until we traced the topology and found that each connected out through a load balancer, and both load balancers sat in front of the <em>same</em> pool of backend servers.</p>
+
+<p>That shared backend is the setup for a subtle and genuinely confusing failure mode. The cloud provider calls it "connection crossing" (串流). It has nothing to do with media streaming. It is what happens when two logically separate connections end up looking <strong>identical</strong> to a backend server, so the backend can no longer tell them apart. This post explains the mechanism, when it happens, and how to avoid it.</p>
+
+<h2 id="how-a-cloud-load-balancer-forwards">How a cloud load balancer forwards traffic</h2>
+
+<p>A managed cloud load balancer presents a virtual IP (VIP) and listening port to the outside world, and forwards to a pool of backend servers (real servers, "RS"). It comes in two flavours:</p>
+
+<ul>
+  <li><strong>Layer 4</strong> forwards based on transport-layer connection information only — protocol plus the address four-tuple. It is typically handled by a high-performance forwarding gateway. It does not look at HTTP host, URL, or cookies.</li>
+  <li><strong>Layer 7</strong> understands the application protocol (HTTP/HTTPS/gRPC) and can route by domain, URL path, header, or cookie. It runs on a proxy tier (commonly Nginx-based) behind the L4 gateway.</li>
+</ul>
+
+<p>A connection is identified by its four-tuple:</p>
+
+<pre><code>source IP : source port  →  destination IP : destination port
+</code></pre>
+
+<p>Now the crucial detail. Many L4 configurations, and L7 short-connection configurations, use <strong>source-IP pass-through</strong> (source IP transparency), so the backend sees the client's real IP rather than the load balancer's. That is usually what you want — the backend gets accurate client addresses without needing <code>X-Forwarded-For</code>. But watch what happens to the four-tuple as a packet crosses the load balancer:</p>
+
+<pre><code>client_ip:client_port → vip:vport → rs_ip:rs_port
+</code></pre>
+
+<p>With source-IP pass-through, the backend ultimately sees only:</p>
+
+<pre><code>client_ip:client_port → rs_ip:rs_port
+</code></pre>
+
+<p>The VIP and listening port — the very things that distinguished which entry point the client used — <strong>have disappeared from the four-tuple the backend sees.</strong> That erasure is the seed of the whole problem.</p>
+
+<h2 id="what-crossing-is">What "connection crossing" actually is</h2>
+
+<p>Connection crossing is when two originally distinct front-end connections, after forwarding, converge into the <em>same</em> four-tuple on a single backend server. The backend OS keys its connection table on the four-tuple, so two different logical connections that map to one four-tuple become indistinguishable — packets from one can be delivered to the other, connections reset unexpectedly, data appears corrupted or mixed.</p>
+
+<h2 id="the-five-conditions">The five conditions — all must hold</h2>
+
+<p>Crossing only occurs when every one of these is true at once. That is good news: break any single one and the problem cannot happen.</p>
+
+<ol>
+  <li><strong>The client source IP is passed through</strong> to the backend (L4, or L7 short-connection with pass-through).</li>
+  <li><strong>There are multiple distinct front-end paths</strong> — two load balancers, two listeners on one LB, or an LB path coexisting with a direct-connect path.</li>
+  <li><strong>Those paths converge on the same backend IP and port.</strong></li>
+  <li><strong>The client reuses the same source IP and source port.</strong> A client can legitimately reuse a local source port when the destinations (VIP/port) differ — from its point of view the connections <em>are</em> distinct.</li>
+  <li><strong>The connections overlap in time.</strong> Both must be alive simultaneously to collide in the backend's table.</li>
+</ol>
+
+<p>Our incident matched exactly: two load balancers (condition 2), same backend pool (condition 3), source-IP pass-through (condition 1). Here is the collision in concrete terms:</p>
+
+<pre><code>Client establishes, at the same time:
+  10.0.0.10:50000 → LB-A:80
+  10.0.0.10:50000 → LB-B:80        (same local port, different VIP — legal)
+
+Both LBs forward to the same backend:
+  → 172.16.1.20:8080
+
+Backend sees both connections as:
+  10.0.0.10:50000 → 172.16.1.20:8080     ← identical. Collision.
+</code></pre>
+
+<p>To the client these are two different connections to two different VIPs. To the backend they are one four-tuple, used twice.</p>
+
+<h2 id="does-session-persistence-help">Does session persistence fix it?</h2>
+
+<p>No — and this trips people up. Session persistence (sticky sessions) ensures a given client keeps landing on the <em>same</em> backend. If anything that makes crossing <em>more</em> likely, because it increases the chance both paths pin to the same RS. Persistence solves a different problem (session affinity); it does not add any information to the four-tuple, so it cannot help the backend distinguish two connections that already look identical.</p>
+
+<h2 id="l4-vs-l7">Layer 4 vs Layer 7 risk</h2>
+
+<p>The risk is much higher at L4. Pure L4 forwarding passes the client four-tuple straight through, so it satisfies condition 1 by default.</p>
+
+<p>L7 gives you a natural escape. In <strong>backend long-connection mode</strong>, the L7 proxy connects to the backend using <em>its own</em> source IP and a port it allocates — the real client IP travels in the <code>X-Forwarded-For</code> header instead of the four-tuple:</p>
+
+<pre><code>LB backend-IP : LB-allocated-port → rs_ip:rs_port
+</code></pre>
+
+<p>Because the proxy's own address now occupies the source fields, two different clients no longer produce the same backend four-tuple. Condition 1 is broken, and crossing cannot occur. You get the real client IP from the header rather than from the connection.</p>
+
+<h2 id="how-to-avoid-it">How to avoid it</h2>
+
+<p>Break any one condition:</p>
+
+<ul>
+  <li><strong>Don't put multiple entry points in front of one backend pool</strong> (condition 2) — the trigger in our incident. If you need redundancy, give each LB its own backend pool.</li>
+  <li><strong>Split backend ports or pools</strong> (condition 3), so different paths land on different <code>rs_ip:rs_port</code>.</li>
+  <li><strong>Use L7 with backend long connections</strong> (condition 1) and read the client IP from <code>X-Forwarded-For</code>.</li>
+  <li><strong>Don't allow direct connections that bypass the load balancer</strong> — a direct path plus an LB path is two entry points (condition 2).</li>
+</ul>
+
+<h2 id="how-to-diagnose-it">How to diagnose it</h2>
+
+<p>Crossing looks like unexplained resets, corrupted or interleaved data, or two clients "interfering" with each other. To confirm:</p>
+
+<ul>
+  <li>Map the full topology. Look specifically for multiple front-end paths converging on one backend IP and port — the signature is a shared backend pool.</li>
+  <li>On the backend, capture traffic and look for two flows presenting the same four-tuple, or connection-table anomalies for a four-tuple that should be unique.</li>
+  <li>Enable L7 access logs if using an HTTP/HTTPS listener, to trace individual requests.</li>
+</ul>
+
+<p>A quick mental check — crossing is possible when:</p>
+
+<pre><code>source-IP pass-through
+  AND multiple front-end paths
+  AND same backend IP:port
+  AND client reuses source IP:port
+  AND connections overlap in time
+</code></pre>
+
+<p>All five true → possible. Any one false → impossible.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>Source-IP pass-through erases the VIP and port from the four-tuple.</strong> That is convenient for logging real client IPs and the root enabler of crossing.</li>
+  <li><strong>Crossing needs five conditions at once.</strong> Breaking any single one prevents it — usually the easiest is "don't share one backend pool across multiple entry points."</li>
+  <li><strong>Session persistence does not help.</strong> It adds no distinguishing information; it can make collisions more likely.</li>
+  <li><strong>L7 with backend long connections is the clean fix.</strong> The proxy's own address occupies the source fields; the client IP moves to <code>X-Forwarded-For</code>.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

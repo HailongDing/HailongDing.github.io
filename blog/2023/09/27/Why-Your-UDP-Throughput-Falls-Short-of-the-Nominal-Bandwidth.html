@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Why Your UDP Throughput Falls Short of the Nominal Bandwidth</title>
+    <meta name="description" content="An instance rated for 9 Gbps could not reach it over UDP, though TCP could. UDP throughput is bound by how fast one CPU core can process packets — which makes clock speed, packet size, and core pinning the levers that matter.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2023/09/27/Why-Your-UDP-Throughput-Falls-Short-of-the-Nominal-Bandwidth">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Why Your UDP Throughput Falls Short of the Nominal Bandwidth</h1>
+    <p class="post-meta">Posted on September 27, 2023  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="networking">networking</a>&nbsp; -->
+    networking&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="performance">performance</a>&nbsp; -->
+    performance&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer's instance was rated for 9 Gbps of network bandwidth, but their UDP application could not get anywhere near it. TCP tests hit the number; UDP fell well short. Was the rating wrong?</p>
+
+<p>The rating was fine. UDP throughput is limited by something the bandwidth figure does not describe: <strong>how fast a single CPU core can push packets</strong>. After a good deal of testing, three factors turned out to dominate, and understanding why explains a lot about when a network number is achievable and when it is not.</p>
+
+<h2 id="the-three-factors">The three factors that matter</h2>
+
+<ol>
+  <li><strong>CPU clock speed.</strong> Higher core frequency means higher achievable UDP throughput — this was the single biggest lever.</li>
+  <li><strong>Packet size.</strong> Large packets (jumbo frames, ~9 KB) are far more efficient than small ones.</li>
+  <li><strong>CPU pinning.</strong> Binding the sender/receiver to a specific core measurably improves performance.</li>
+</ol>
+
+<p>The reason all three point back to the CPU is the fundamental difference between how TCP and UDP move data.</p>
+
+<h2 id="why-udp-is-cpu-bound">Why UDP is CPU-bound in a way TCP is not</h2>
+
+<p>TCP has a lot of machinery working in its favour for bulk throughput. Segmentation offload lets the kernel hand the NIC one large buffer and have the hardware chop it into packets; generic receive offload coalesces incoming packets before the stack sees them. The effect is that the expensive per-packet work is amortised, and much of it happens in the NIC rather than on a core.</p>
+
+<p>UDP has none of that in the general case. It is a datagram protocol with no reassembly and no offload help — <strong>every datagram is processed individually by the CPU</strong>, through the full send or receive path: system call, socket layer, UDP layer, IP layer, and out to the driver. That cost is paid per packet regardless of how big the packet is.</p>
+
+<p>So the throughput ceiling is set by <em>packets per second a core can process</em>, multiplied by <em>bytes per packet</em>. That single equation explains all three factors:</p>
+
+<ul>
+  <li><strong>Faster core → more packets per second.</strong> The per-packet cost is largely fixed work; a higher clock does more of it per unit time.</li>
+  <li><strong>Bigger packets → more bytes per packet.</strong> Same packet rate, more payload each, so more throughput for the same CPU effort. This is why jumbo frames matter so much for UDP.</li>
+  <li><strong>Pinning → no migration overhead.</strong> Keep the flow on one core and you keep its cache warm and avoid cross-core scheduling costs.</li>
+</ul>
+
+<h2 id="the-numbers">The numbers from testing</h2>
+
+<p>On a <strong>2.5 GHz</strong> instance, 10 Gbps of UDP was simply unreachable — around 5.9 Gbps was the practical ceiling for a single core, no matter what else we tuned. That is the key finding: for a 2.5 GHz core, ~6 Gbps is roughly the wall.</p>
+
+<p>Moving to a <strong>3.2 GHz</strong> instance (Intel Ice Lake generation) changed the picture. Testing with <code>iperf3</code> and jumbo-sized datagrams:</p>
+
+<pre><code># server
+$ iperf3 -s
+
+# client — 8972-byte payload, 5 minutes, UDP, unlimited rate, pinned to core 4
+$ iperf3 -c &lt;server-ip&gt; -l 8972 -t 300 -u -b0 -A 4
+</code></pre>
+
+<p>The flags worth knowing:</p>
+
+<ul>
+  <li><code>-l 8972</code> — payload size. 9000-byte jumbo frame minus 28 bytes of IPv4 + UDP header = 8972 bytes, so the datagram fits in one jumbo frame without fragmentation.</li>
+  <li><code>-u</code> — UDP; <code>-b0</code> — no sending-rate cap; <code>-A 4</code> — pin to core 4 (pick an idle one).</li>
+</ul>
+
+<p>On an 8-core / 16 GB instance of this generation (9 Gbps rating), the unlimited test reached about <strong>12 Gbps but with packet loss</strong> — it was overrunning the rating. Capping the send rate at the rating removed the loss:</p>
+
+<pre><code>$ iperf3 -c &lt;server-ip&gt; -l 8972 -t 300 -u -b 9G -A 4
+</code></pre>
+
+<p>Scaling up to a larger instance (18 Gbps rating) reached about 15.5 Gbps with a little loss unlimited, and ran clean when capped. The takeaway for this CPU generation: the smaller instance was already enough to <strong>saturate its 9 Gbps rating</strong> from a single UDP flow — the ideal, cost-effective pick for that workload.</p>
+
+<h2 id="how-to-tune-a-udp-application">How to tune a UDP application</h2>
+
+<ul>
+  <li><strong>Pick a high-clock instance.</strong> For UDP-heavy workloads this is the most important choice — it sets the single-core packet-rate ceiling before you tune anything.</li>
+  <li><strong>Send large packets.</strong> Push datagram size up toward the jumbo limit, but do not exceed what the network path allows (here, 8972 bytes of payload). Fragmentation undoes the benefit.</li>
+  <li><strong>Pin your threads:</strong> <code>taskset -c &lt;core&gt; ./your_program</code>. Keep the hot flow on a fixed core.</li>
+  <li><strong>Watch per-core utilisation, not aggregate.</strong> Run <code>mpstat -P ALL 3</code> on both ends during the test. A single UDP flow pegs <em>one</em> core while the box looks idle overall — the average hides the bottleneck completely. Keep that core below ~90%; once it saturates, loss climbs sharply.</li>
+  <li><strong>Scale out across cores.</strong> One flow is capped by one core. To use the full NIC bandwidth, spread traffic across multiple flows/cores (multiple sockets, <code>SO_REUSEPORT</code>, receive-side scaling) so no single core is the limit.</li>
+</ul>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>A bandwidth rating is a ceiling, not a promise a single flow can reach it.</strong> Whether you hit it depends on the CPU, the protocol, and the packet size.</li>
+  <li><strong>UDP throughput is single-core-bound.</strong> No segmentation/receive offload means the CPU touches every datagram; packets-per-second × bytes-per-packet is your real limit.</li>
+  <li><strong>Clock speed and packet size are the two big levers.</strong> A 2.5 GHz core caps out around 6 Gbps; a 3.2 GHz core with jumbo frames saturates 9 Gbps easily.</li>
+  <li><strong>Measure per-core.</strong> Aggregate CPU graphs will tell you the machine is idle while one core is the bottleneck.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

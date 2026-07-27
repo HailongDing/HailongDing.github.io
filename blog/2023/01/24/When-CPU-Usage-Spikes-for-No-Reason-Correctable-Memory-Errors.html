@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: When CPU Usage Spikes for No Reason: Correctable Memory Errors</title>
+    <meta name="description" content="A server&#x27;s CPU usage climbed with no change in workload. The time was going somewhere the OS could barely account for: correcting a failing DIMM&#x27;s memory errors, and paying for it in firmware interrupts that freeze every core.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2023/01/24/When-CPU-Usage-Spikes-for-No-Reason-Correctable-Memory-Errors">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>When CPU Usage Spikes for No Reason: Correctable Memory Errors</h1>
+    <p class="post-meta">Posted on January 24, 2023  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="hardware">hardware</a>&nbsp; -->
+    hardware&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="troubleshooting">troubleshooting</a>&nbsp; -->
+    troubleshooting&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer reported that their server's CPU usage had climbed sharply, even though nothing about their workload had changed — same traffic, same code, same request rate. The graphs showed real CPU being consumed, but the application was not doing more work. Where was it going?</p>
+
+<p>The answer was in the system log, and it had nothing to do with the application. The machine was quietly spending its time correcting memory errors.</p>
+
+<h2 id="what-the-log-showed">What the log showed</h2>
+
+<p>The system messages contained a steady trickle of corrected-error events from the memory controller — the kind of line that scrolls past unnoticed until you go looking for it:</p>
+
+<pre><code>mce: [Hardware Error]: Machine check events logged
+EDAC MC0: 1 CE memory read error on ... (channel:1 slot:0)
+EDAC MC0: 1 CE memory read error on ... (channel:1 slot:0)
+EDAC MC0: 1 CE memory read error on ... (channel:1 slot:0)
+</code></pre>
+
+<p>"CE" is a <strong>correctable error</strong>. The machine was not crashing, and no data was being lost — but each of these events carries a hidden cost that, in aggregate, was showing up as CPU usage. To understand why, it helps to know what actually happens when a bit in memory goes wrong.</p>
+
+<h2 id="ecc-ce-and-uce">ECC, CE, and UCE</h2>
+
+<p>Server memory is protected by ECC (error-correcting code). For every 64-bit word the CPU reads from a cache line, the DIMM also stores 8 bits of ECC data. Those extra bits let the memory controller detect and, within limits, repair corruption:</p>
+
+<ul>
+  <li>A <strong>CE (correctable error)</strong> is a bit flip that ECC can fix on the fly. The corrected data is returned to the CPU and, ideally, written back to memory. Nothing is lost.</li>
+  <li>A <strong>UCE (uncorrectable error)</strong> is corruption too severe for ECC to repair. This is the dangerous case — it typically forces the kernel to take action, up to and including a panic to prevent using bad data.</li>
+</ul>
+
+<p>Why does a bit flip in the first place? Each memory cell stores a 0 or 1 as the charge level of a tiny capacitor. Two things can corrupt it:</p>
+
+<ul>
+  <li><strong>Hard errors</strong> — a physical fault in the DIMM. These reproduce reliably and tend to get worse; the module is failing.</li>
+  <li><strong>Soft errors</strong> — a transient disturbance: electrical noise, signal integrity on the board, heat, or even a cosmic ray depositing charge in a cell. These are random and hard to reproduce.</li>
+</ul>
+
+<h2 id="why-a-harmless-error-costs-cpu">Why a "harmless" error costs CPU</h2>
+
+<p>The key is that correcting an error is not free — and the cost depends on <em>how the platform is configured to handle it</em>.</p>
+
+<p>When a correctable error occurs, the platform's RAS (reliability, availability, serviceability) features can report it in one of two ways:</p>
+
+<ul>
+  <li><strong>CMCI</strong> (Corrected Machine Check Interrupt) — handled by the operating system. The OS records the event and moves on. This is cheap.</li>
+  <li><strong>SMI</strong> (System Management Interrupt) — handled by the firmware (BIOS), in System Management Mode.</li>
+</ul>
+
+<p>SMI is the expensive one, and here is the crucial detail: <strong>an SMI stops every core and hands control to firmware.</strong> The OS does not schedule it, cannot see it, and cannot interrupt it. The cores simply freeze while the firmware's handler runs — typically 100–300 ms, and on some older BIOS or BMC versions considerably longer if the handler is inefficient or the errors are not converging.</p>
+
+<p>Most server vendors deliberately handle each individual CE via CMCI rather than SMI, precisely to avoid the risk of frequent memory errors triggering constant firmware pauses. But there is usually a threshold: the CPU's internal CE counter increments on every corrected error, and when it crosses a limit — for example, accumulating a couple of thousand events — the platform escalates to an SMI so the firmware can collect the details of the failing DIMM, log it to the BMC and the system event log, and record which module and what error type.</p>
+
+<p>So the "unexplained CPU usage" was really a combination of two things:</p>
+
+<ol>
+  <li>The overhead of the OS logging a continuous stream of CMCI events.</li>
+  <li>Periodic SMI pauses when the error count crossed the escalation threshold — during which the whole machine was stalled in firmware, showing up as lost time and latency jitter that looks, from the outside, like the CPU being busy.</li>
+</ol>
+
+<p>A DIMM producing errors steadily enough — say, one per second — will march toward that threshold and trigger the escalation on a predictable cadence. The application never got slower; the machine was just being interrupted underneath it.</p>
+
+<h2 id="one-more-source-scrubbing">One more source: memory scrubbing</h2>
+
+<p>There is a second way CEs appear, worth knowing because it can look alarming without indicating an acute problem. Many platforms run a background <strong>patrol scrub</strong> — a RAS feature that periodically walks idle memory (often on a 24-hour cycle), reads each location, and rewrites any data ECC had to correct. This proactively cleans up soft errors before the application reads them.</p>
+
+<p>Errors surfaced this way are <em>scrubbing CEs</em>; errors surfaced when the running system reads a location are <em>read CEs</em>. Both point at the same DIMM, but scrubbing CEs mean the location was found by the sweep rather than hit by the workload.</p>
+
+<h2 id="how-to-diagnose-it">How to diagnose it</h2>
+
+<p>If you see CPU or latency anomalies with no matching change in application behaviour, check for memory errors before anything else:</p>
+
+<pre><code># Corrected/uncorrected error counts, per DIMM, decoded
+$ sudo edac-util -v
+
+# Machine-check events collected by the MCE daemon
+$ sudo journalctl -u mcelog
+$ sudo ras-mc-ctl --summary
+$ sudo ras-mc-ctl --errors
+
+# Raw hint in the kernel log
+$ dmesg | grep -iE 'mce|EDAC|Hardware Error'
+</code></pre>
+
+<p>These tell you whether errors are occurring, whether they are correctable or not, and — most usefully — <em>which physical slot</em> is responsible. The BMC / IPMI system event log (<code>ipmitool sel elist</code>) records the same from the firmware side and survives an OS reinstall.</p>
+
+<h2 id="what-to-do">What to do</h2>
+
+<ul>
+  <li><strong>Replace the DIMM.</strong> A module producing a steady stream of correctable errors is failing. Correctable today can become uncorrectable tomorrow, and a UCE is a crash rather than a slowdown. Use the slot information from EDAC or the BMC to identify it. On a cloud instance, this means migrating to healthy hardware — raise it with the provider, who can live-migrate the instance off the suspect host.</li>
+  <li><strong>Don't dismiss it because "nothing crashed."</strong> Correctable errors are the early-warning system working as designed. The absence of a crash is not the absence of a problem.</li>
+  <li><strong>Check firmware if pauses are severe.</strong> If the SMI handling itself is causing long stalls, a BIOS/BMC update may shorten or fix an inefficient handler — but this treats the symptom; the failing DIMM is still the cause.</li>
+</ul>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>Unexplained CPU or latency with no workload change is often hardware.</strong> The cores may be spending time somewhere the OS cannot even account for.</li>
+  <li><strong>ECC corrects errors, but correction has a cost.</strong> A high enough error rate escalates to firmware-handled SMIs that freeze every core for hundreds of milliseconds.</li>
+  <li><strong>SMIs are invisible to the OS.</strong> They will not appear in normal profiling; you find them by looking at memory-error counters, not CPU flame graphs.</li>
+  <li><strong>A steady stream of correctable errors means a dying DIMM.</strong> Replace it before it produces an uncorrectable one.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

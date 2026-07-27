@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Recovering a Missing LVM Physical Volume from Metadata Backups</title>
+    <meta name="description" content="An LVM physical volume stopped being recognised, stranding its logical volume. Because LVM archives its own metadata, the damaged PV header can be rebuilt with its exact original UUID — a full step-by-step recovery.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2026/02/10/Recovering-a-Missing-LVM-Physical-Volume-from-Metadata-Backups">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Recovering a Missing LVM Physical Volume from Metadata Backups</h1>
+    <p class="post-meta">Posted on February 10, 2026  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="storage">storage</a>&nbsp; -->
+    storage&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="recovery">recovery</a>&nbsp; -->
+    recovery&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer had an LVM setup where one physical volume had stopped being recognised. The disk was there, the partition was there, but LVM no longer saw it as part of the volume group — which meant the logical volume that depended on it would not activate, and the data on it was inaccessible.</p>
+
+<p>The good news, and the reason LVM is forgiving in situations like this, is that <strong>LVM keeps backups of its own metadata</strong>. A physical volume whose LVM header has been damaged or wiped can very often be rebuilt from those backups, exactly, because the metadata records the precise identity and layout the PV is supposed to have. Here is the full recovery, step by step.</p>
+
+<h2 id="a-brief-mental-model">A brief mental model of LVM</h2>
+
+<p>Three layers, bottom to top:</p>
+
+<ul>
+  <li><strong>PV (physical volume)</strong> — a disk or partition initialised for LVM. Near its start sits a label and metadata area identifying it by a unique UUID and describing the volume group it belongs to.</li>
+  <li><strong>VG (volume group)</strong> — a pool made of one or more PVs.</li>
+  <li><strong>LV (logical volume)</strong> — a slice carved out of the VG, which is what you actually put a filesystem on.</li>
+</ul>
+
+<p>When a PV's on-disk label/metadata is lost, LVM can no longer tell that the disk belongs to the VG, so the VG is incomplete and its LVs will not activate. The fix is to write a correct label back — and because LVM archives its metadata under <code>/etc/lvm/backup/</code> and <code>/etc/lvm/archive/</code>, we know exactly what that label should contain, including the original PV UUID.</p>
+
+<h2 id="step-0-back-up-before-you-touch-anything">Step 0: back up before you touch anything</h2>
+
+<p>Every step below writes to disk. Before any of it, preserve the current state so a mistake is recoverable:</p>
+
+<pre><code># save the VG's metadata backup file
+$ cp -a /etc/lvm/backup/datavg /root/datavg.backup.$(date +%F_%H%M%S)
+
+# save the first 16 MiB of the partition — where the LVM header lives
+$ dd if=/dev/vdc1 of=/root/vdc1.head.16MiB.$(date +%F_%H%M%S).img bs=1M count=16
+$ sync
+</code></pre>
+
+<p>That image of the first 16 MiB is your undo button: if rebuilding the header goes wrong, you can restore exactly what was there. On a cloud instance, take a volume snapshot as well — it is the cheapest insurance available.</p>
+
+<h2 id="step-1-deactivate-the-vg">Step 1: deactivate the volume group</h2>
+
+<pre><code>$ vgchange -an datavg
+</code></pre>
+
+<p>Turn the VG off first, so nothing tries to write to it while you are rebuilding a PV header underneath it. Working on a live VG invites corruption.</p>
+
+<h2 id="step-2-rebuild-the-missing-pv-header">Step 2: rebuild the missing PV header</h2>
+
+<p>This is the heart of the recovery. <code>pvcreate</code> normally <em>initialises</em> a new PV, which would assign a fresh UUID and wipe existing metadata — the last thing you want. The <code>--uuid</code> and <code>--restorefile</code> options change its behaviour entirely: instead of creating something new, it recreates a PV with the <em>exact original UUID</em> and the layout described in the metadata backup.</p>
+
+<pre><code>$ pvcreate \
+    --uuid "zXzvsB-poE5-JRoz-nzt6-sAtD-HgOO-wgp6BD" \
+    --restorefile /etc/lvm/backup/datavg \
+    /dev/vdc1
+</code></pre>
+
+<p>The UUID comes from the metadata backup file itself (it records the UUID every PV in the VG is supposed to have), so you are restoring the disk's original identity, not inventing one. Confirm the PV is back and correctly associated with the VG:</p>
+
+<pre><code>$ pvs -o pv_name,pv_uuid,vg_name /dev/vdc1
+</code></pre>
+
+<p>It should now show the PV UUID belonging to <code>datavg</code>.</p>
+
+<h2 id="step-3-activate-the-logical-volume">Step 3: activate the logical volume</h2>
+
+<p>With the PV restored, bring up the LV. Using partial activation mode is prudent during recovery — it will activate what it can even if the VG is not yet perfectly whole:</p>
+
+<pre><code>$ lvchange -ay --activationmode partial datavg/home_lv
+
+# confirm the device-mapper node appeared
+$ ls -l /dev/mapper/datavg-home_lv
+</code></pre>
+
+<h2 id="step-4-repair-the-filesystem">Step 4: repair the filesystem</h2>
+
+<p>The disruption very likely left the filesystem needing recovery (a "needs journal recovery" state is typical). Run a check on the now-visible LV:</p>
+
+<pre><code>$ fsck.ext4 -f -y /dev/mapper/datavg-home_lv
+</code></pre>
+
+<p>On a large volume this takes a while — let it finish; interrupting it can leave the filesystem in a worse state. When it is done, confirm the filesystem looks clean:</p>
+
+<pre><code>$ file -sL /dev/mapper/datavg-home_lv
+</code></pre>
+
+<h2 id="step-5-mount-and-verify">Step 5: mount and verify read/write</h2>
+
+<pre><code>$ mkdir -p /mnt/home
+$ mount /dev/mapper/datavg-home_lv /mnt/home
+$ df -hT /mnt/home
+
+# prove it is actually writable, then clean up the test
+$ touch /mnt/home/.rw_test &amp;&amp; rm -f /mnt/home/.rw_test
+</code></pre>
+
+<p>Mounting to a scratch path and doing an explicit write test confirms the recovery end to end — the data is present <em>and</em> the volume accepts writes.</p>
+
+<h2 id="step-6-take-a-fresh-backup">Step 6: take a fresh metadata backup</h2>
+
+<pre><code>$ vgcfgbackup -f /root/datavg.vgcfgbackup.$(date +%F_%H%M%S) datavg
+</code></pre>
+
+<p>Now that everything is healthy, capture a clean metadata backup so you are starting from a known-good state going forward.</p>
+
+<p>After this, the disk was recognised normally and the data was fully accessible again.</p>
+
+<h2 id="why-this-works">Why this works</h2>
+
+<p>The recovery is possible because of a deliberate LVM design choice: <strong>every change to a VG is archived automatically</strong>, under <code>/etc/lvm/archive/</code> (previous versions) and <code>/etc/lvm/backup/</code> (current). Those text files record the complete topology — every PV's UUID, every LV's extent mapping. So even when a PV's on-disk header is gone, the information needed to recreate it exactly is sitting on the root filesystem. <code>pvcreate --uuid --restorefile</code> is the tool built specifically to use it.</p>
+
+<p>The important discipline is that <strong>you are restoring identity, not creating it</strong>. The whole recovery hinges on giving the PV back its original UUID; a plain <code>pvcreate</code> would assign a new one and destroy the association the VG expects, turning a recoverable situation into data loss. That is also why Step 0 matters so much — if you get the header rebuild wrong, the saved 16 MiB image lets you try again from the original bytes.</p>
+
+<h2 id="the-cloud-recommendation">A cloud recommendation</h2>
+
+<p>LVM's flexibility on physical servers — pooling disks, carving volumes, extending across devices — is genuinely useful. But on a cloud platform, much of what LVM is used for is provided more simply by <strong>cloud block storage</strong>: volumes expand online without the PV/VG/LV dance, and snapshots give you point-in-time backups and instant rollback. For a lot of cloud workloads, a single expandable cloud volume with scheduled snapshots is easier to operate and easier to recover than a hand-built LVM stack — and it would have made this incident a snapshot restore rather than a manual header rebuild.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>A missing PV usually isn't lost data.</strong> LVM archives its metadata, so a damaged PV header can be rebuilt exactly.</li>
+  <li><strong><code>pvcreate --uuid --restorefile</code> restores identity.</strong> It recreates the PV with its original UUID from the metadata backup — never run a plain <code>pvcreate</code> on a PV you are trying to recover.</li>
+  <li><strong>Back up the header first.</strong> A <code>dd</code> of the first 16 MiB (plus a cloud snapshot) makes the rebuild reversible.</li>
+  <li><strong>Deactivate, rebuild, activate partial, fsck, verify, re-backup.</strong> Work on a quiet VG and prove read/write at the end.</li>
+  <li><strong>On the cloud, consider block storage instead.</strong> Online expansion and snapshots replace much of what LVM is used for, with far easier recovery.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

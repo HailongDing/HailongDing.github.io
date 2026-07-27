@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Chasing a Clock That Jumped Every 30 Minutes</title>
+    <meta name="description" content="A server&#x27;s clock jumped on a fixed interval with no time service supposedly running. Packet capture revealed two syncs against two different sources — the platform&#x27;s NTP every minute, a customer cron job every hour, fighting each other.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2025/04/24/Chasing-a-Clock-That-Jumped-Every-30-Minutes">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Chasing a Clock That Jumped Every 30 Minutes</h1>
+    <p class="post-meta">Posted on April 24, 2025  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="timekeeping">timekeeping</a>&nbsp; -->
+    timekeeping&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="networking">networking</a>&nbsp; -->
+    networking&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer reported that their server's clock jumped — not drifted, jumped — roughly every 30 minutes. The time would suddenly shift, then behave for a while, then shift again, on a regular cadence. A jump on a fixed interval is a strong hint: something scheduled is setting the clock.</p>
+
+<p>This is a nice little detective story because the answer was hiding in plain sight, and finding it was a matter of eliminating the obvious explanations one at a time until only one thing was left.</p>
+
+<h2 id="step-1-is-a-time-service-running">Step 1: is a time service running?</h2>
+
+<p>The first suspect for any clock problem is the time-synchronisation daemon. If <code>ntpd</code>, <code>chronyd</code>, or <code>systemd-timesyncd</code> is running and talking to a bad or unreachable source, it can step the clock around.</p>
+
+<p>We checked. <strong>No time service was running at all</strong> on the customer's machine — no <code>ntpd</code>, no <code>chronyd</code>, nothing. So the jumps were not coming from a misbehaving NTP client. That is a useful elimination: whatever was moving the clock was doing it directly, not through the normal time-sync machinery.</p>
+
+<h2 id="step-2-what-is-scheduled">Step 2: what's scheduled?</h2>
+
+<p>A regular 30-minute cadence means a scheduler. Checking <code>cron</code> revealed the machine <em>did</em> have scheduled jobs running. That was the thread to pull: a cron job was doing something on an interval, and the clock was moving on an interval.</p>
+
+<p>But before blaming the customer's cron jobs, we needed to understand the full picture of what was touching this machine's clock — and that turned out to include the platform itself.</p>
+
+<h2 id="step-3-two-different-time-sources">Step 3: two different time sources, fighting</h2>
+
+<p>Capturing traffic on the platform side (outside the guest) showed the real shape of the problem. There were <strong>two</strong> separate things synchronising this machine's clock, to two different sources:</p>
+
+<ul>
+  <li><strong>Every minute</strong>, the instance synced against the <em>platform's</em> NTP service. Cloud platforms provide an internal NTP endpoint on the local network, and instances are typically configured to use it out of the box. This is the well-behaved, correct source — low latency, high accuracy, maintained by the provider.</li>
+  <li><strong>Every hour</strong>, the instance reached out to a <em>different, customer-defined</em> address to sync time. And this hourly sync lined up precisely with the customer's reported jumps.</li>
+</ul>
+
+<p>There was the conflict. Two independent time corrections were running against two different references. If those references disagreed — even by a little — the clock would be pulled one way every minute and yanked back the other way every hour. The hourly correction against the customer's own endpoint was the visible "jump," because it was the one making a large adjustment.</p>
+
+<h2 id="the-diagnosis">The diagnosis</h2>
+
+<p>The machine was being told the time by two masters. The platform NTP source kept it accurate minute to minute; a second, customer-configured sync to a different server periodically overrode it with a different notion of "now." Whenever the two sources disagreed, the hourly override showed up as a discontinuity — a clock that jumped every 30 minutes to an hour.</p>
+
+<p>The reason it was confusing from inside the guest is that the customer had convinced themselves no time service was running — and in the conventional sense (a running <code>ntpd</code>/<code>chronyd</code>) that was true. The second sync was being driven by a scheduled job invoking a one-shot time command against their own server, not by a persistent daemon. It does not show up as a service; it shows up as a line in <code>crontab</code> and a periodic packet on the wire.</p>
+
+<h2 id="capturing-ntp-to-prove-it">Capturing NTP to prove it</h2>
+
+<p>If you need to confirm what a machine is syncing against — especially when the guest's own view is unreliable — capture the NTP traffic. NTP is UDP on port 123:</p>
+
+<pre><code>$ sudo tcpdump -n -i any udp port 123
+</code></pre>
+
+<p>That immediately shows every time source the machine is talking to and how often. In this case it revealed both the once-a-minute conversation with the platform endpoint and the once-an-hour conversation with the customer's server — two destinations, two cadences, which is the entire diagnosis in one command. Doing the capture on the platform side had the added advantage of being immune to anything misconfigured or hidden inside the guest.</p>
+
+<h2 id="the-fix">The fix</h2>
+
+<p>The rule for timekeeping is simple and it was the resolution here: <strong>one authoritative source, one mechanism.</strong></p>
+
+<ul>
+  <li><strong>Pick a single time source.</strong> The platform NTP endpoint is the sensible default on a cloud instance — it is close, accurate, and maintained. If the customer needs their own source for policy reasons, use that one <em>instead</em>, not in addition.</li>
+  <li><strong>Remove the competing sync.</strong> The hourly cron job syncing to a different server was the thing to delete. Two corrections against two references will always fight.</li>
+  <li><strong>Use a real NTP daemon, not a cron'd one-shot.</strong> <code>chronyd</code> (or <code>ntpd</code>) disciplines the clock gradually and continuously — it <em>slews</em> the clock, nudging its rate so time stays monotonic, rather than <em>stepping</em> it in visible jumps the way a periodic "set the time now" command does. Continuous discipline from one source is smooth; periodic hard sets from a second source are exactly the jumps the customer saw.</li>
+</ul>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>A clock that jumps on a fixed interval is being set by something scheduled.</strong> Drift is gradual; jumps are events. Look at <code>cron</code> and at anything issuing a one-shot time command.</li>
+  <li><strong>"No time service running" can be true and misleading.</strong> A scheduled one-shot sync is not a daemon and won't appear as a service, but it still moves the clock.</li>
+  <li><strong>Two time sources will fight.</strong> Converge on a single authoritative source and a single mechanism.</li>
+  <li><strong><code>tcpdump udp port 123</code> shows you the truth.</strong> Capturing NTP — ideally outside the guest — reveals every source and cadence at a glance.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: Why hwclock and date Disagree on a Virtual Machine</title>
+    <meta name="description" content="On a VM, hwclock and date showed different times, and the gap grew with vCPU count. The emulated hardware clock is a weak timekeeper — why that is, and why the fix is to ignore it and discipline the system clock with NTP.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2025/08/28/Why-hwclock-and-date-Disagree-on-a-Virtual-Machine">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>Why hwclock and date Disagree on a Virtual Machine</h1>
+    <p class="post-meta">Posted on August 28, 2025  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="virtualization">virtualization</a>&nbsp; -->
+    virtualization&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="timekeeping">timekeeping</a>&nbsp; -->
+    timekeeping&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer noticed something that looked like a bug: on their cloud VM, <code>hwclock</code> and <code>date</code> reported different times. The system clock said one thing, the hardware clock said another, and the gap between them was not zero.</p>
+
+<p>Testing across a range of instance types and operating systems turned up a genuinely interesting pattern, and it leads to the same practical advice as a <a href="/blog/2026/03/18/Why-RTC-Time-Changes-Do-Not-Survive-a-Reboot-on-a-Cloud-VM">related timekeeping problem I wrote about earlier</a>: in a virtual machine, do not trust the hardware clock. This post looks at the discrepancy from the other direction — not "why won't my RTC change stick," but "why do the two clocks disagree at all, and why does the gap grow?"</p>
+
+<h2 id="two-clocks">Two clocks, and why they differ</h2>
+
+<p>A Linux system has two distinct notions of time:</p>
+
+<ul>
+  <li>The <strong>system clock</strong> (what <code>date</code> shows) — maintained by the kernel in memory, advanced by a high-resolution timer, and, if you run a time daemon, disciplined against a network source. This is the time everything actually uses.</li>
+  <li>The <strong>hardware clock</strong> or RTC (what <code>hwclock</code> shows) — on a physical machine, a battery-backed chip that keeps time while the power is off. Its main job is to seed the system clock at boot before the network is up.</li>
+</ul>
+
+<p>On a healthy physical machine these track each other closely because the RTC is a real, stable oscillator and the OS periodically writes the system time back to it. On a VM, the relationship is much weaker — and that is the crux.</p>
+
+<h2 id="the-pattern">The pattern: more vCPUs, bigger gap</h2>
+
+<p>The revealing finding from testing across many machine types was this: <strong>the more virtual CPUs an instance had, the larger the difference between <code>hwclock</code> and <code>date</code> tended to be.</strong> The discrepancy was not random noise; it scaled with the size of the instance.</p>
+
+<p>That correlation is the clue to the whole thing. It points away from "the RTC is broken" and toward the cost of <em>reading</em> a simulated clock in a virtual environment — a cost that grows with how much virtual hardware the hypervisor has to coordinate.</p>
+
+<h2 id="why-a-virtual-rtc-drifts">Why a virtual hardware clock drifts</h2>
+
+<p>In a VM there is no battery-backed chip. The "hardware clock" is <strong>emulated by the hypervisor</strong>, and that changes its behaviour in ways that produce exactly this symptom:</p>
+
+<ul>
+  <li><strong>The guest doesn't run continuously.</strong> The hypervisor schedules the VM against other work on the host; from inside, time effectively pauses whenever the guest is descheduled. On a bigger instance there is more to coordinate — more vCPUs to schedule, more contention — so the reading of an emulated clock is more affected.</li>
+  <li><strong>Reads are not instantaneous or perfectly synchronised.</strong> Reading an emulated device involves the hypervisor. Across many vCPUs, those reads are not all perfectly aligned, and small inconsistencies accumulate into a visible offset.</li>
+  <li><strong>Lifecycle events cause jumps.</strong> Live migration to another host, resume from suspend, or heavy host load all perturb the guest's sense of time — sometimes by large amounts. The underlying timestamp counter can differ between hosts, so a migration produces a discontinuity.</li>
+</ul>
+
+<p>So the emulated RTC is inherently a less reliable timekeeper than a physical one, and its unreliability is more pronounced precisely on the larger, busier instances — which is the correlation the testing found.</p>
+
+<h2 id="the-fix">The fix: ignore the hardware clock, run NTP</h2>
+
+<p>The recommendation is the same one every cloud vendor's documentation gives, and it is the correct resolution here: <strong>do not rely on the hardware clock in a VM. Synchronise the system clock over the network with NTP.</strong></p>
+
+<ul>
+  <li><strong>Run a time daemon</strong> — <code>chrony</code> is the modern default and handles virtualised environments well. Point it at your platform's NTP endpoint. The system clock (<code>date</code>) is then continuously disciplined against an accurate external source and stays correct regardless of what the emulated RTC is doing.</li>
+  <li><strong>Stop treating <code>hwclock</code> as authoritative.</strong> Its purpose — seeding time across a power-off — barely applies to a VM, which gets its time from the host and the network anyway. A disagreement between <code>hwclock</code> and <code>date</code> on a VM is expected, not a fault to chase.</li>
+  <li><strong>Expect and allow for jumps.</strong> Virtualisation lifecycle events can cause large time jumps, and by default <code>ntpd</code> will <em>give up</em> if it sees a jump beyond a sanity threshold — on the reasonable assumption that such a leap indicates a fault. In a VM that leap is routine, so configure the daemon to keep correcting: <code>tinker panic 0</code> for <code>ntpd</code>, or the equivalent <code>makestep</code> handling that <code>chrony</code> does natively.</li>
+</ul>
+
+<h2 id="the-underlying-mechanics">The underlying mechanics, briefly</h2>
+
+<p>For the curious, the reason this is hard is timestamp counters. Physical timekeeping leans on the CPU's TSC, whose frequency is measured once at boot. Virtualisation breaks the assumptions: after a live migration the new host's TSC differs, so the value "jumps," and the frequency measured at boot is no longer the true frequency. Hypervisors paper over this with paravirtualised clocks — <em>pvclock</em> for Xen and KVM guests, the <em>TSC reference page</em> for Hyper-V — fixed-frequency sources the host keeps meaningful across migration, from which the guest computes the real time. Modern guests use these automatically, which is why the situation is far better than it once was. But the emulated <em>RTC</em> specifically remains a weak timekeeper, which is why the guidance is to bypass it in favour of NTP.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong><code>hwclock</code> ≠ <code>date</code> on a VM is normal.</strong> They are two different clocks, and the hardware one is emulated.</li>
+  <li><strong>The gap scaling with vCPU count is the tell.</strong> It points at the cost of coordinating an emulated clock across more virtual hardware, not at a broken RTC.</li>
+  <li><strong>A VM's emulated hardware clock is not a reliable time source.</strong> Migration, suspend/resume, and host load all perturb it.</li>
+  <li><strong>Run NTP against the system clock, and let the daemon keep correcting through jumps.</strong> <code>chrony</code> handles this well; with <code>ntpd</code>, set <code>tinker panic 0</code>.</li>
+</ul>
+
+<p>For the closely related question of why a <em>change</em> you make to a VM's hardware clock doesn't survive a reboot, see <a href="/blog/2026/03/18/Why-RTC-Time-Changes-Do-Not-Survive-a-Reboot-on-a-Cloud-VM">Why RTC Time Changes Do Not Survive a Reboot on a Cloud VM</a>.</p>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

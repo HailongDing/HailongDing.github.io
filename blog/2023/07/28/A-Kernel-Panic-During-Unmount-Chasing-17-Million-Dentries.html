@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: A Kernel Panic During Unmount: Chasing 17 Million Dentries</title>
+    <meta name="description" content="An old kernel panicked with a soft lockup while unmounting a filesystem, with 17.6 million dentries cached and 174 GB of RAM free. A study in reasoning from an incomplete crash dump — and separating what is proven from what is merely likely.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2023/07/28/A-Kernel-Panic-During-Unmount-Chasing-17-Million-Dentries">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>A Kernel Panic During Unmount: Chasing 17 Million Dentries</h1>
+    <p class="post-meta">Posted on July 28, 2023  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux kernel">linux kernel</a>&nbsp; -->
+    linux kernel&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="filesystems">filesystems</a>&nbsp; -->
+    filesystems&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="troubleshooting">troubleshooting</a>&nbsp; -->
+    troubleshooting&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A server running an old 3.10-series kernel panicked with a soft lockup. The crash utility output that had been retained pointed at something very specific: the machine died while the <code>umount</code> command was tearing down a filesystem, and the CPU was stuck in the kernel's directory-entry cleanup code.</p>
+
+<p>This is a good case to write up not because the root cause is exotic — it is not — but because it is a clean example of reasoning under incomplete evidence. The original <code>vmcore</code> and its matching debug symbols were no longer available by the time the analysis was done, so the write-up has to be honest about the line between what is proven and what is merely very likely. That discipline is worth as much as the conclusion.</p>
+
+<h2 id="the-panic">The panic</h2>
+
+<p>The retained crash summary and call trace showed a soft-lockup panic in the <code>umount</code> process (PID 202413) on CPU 3, with a stack that ran straight through the VFS dentry-teardown path:</p>
+
+<pre><code>dentry_lru_del()
+  __d_shrink()
+    shrink_dcache_for_umount_subtree()
+      shrink_dcache_for_umount()
+        generic_shutdown_super()
+          kill_block_super()
+</code></pre>
+
+<p>This stack is highly specific. The CPU was not idle, not blocked on disk I/O, not waiting in user space — it was actively executing dentry destruction as part of unmounting a block-backed filesystem. A soft lockup means it stayed in that kernel path, without yielding, long enough for the watchdog to fire and panic the box.</p>
+
+<p>Alongside it, a snapshot of <code>/proc/sys/fs/dentry-state</code> had been captured:</p>
+
+<pre><code>17603707 17252679 45 0 0 0
+</code></pre>
+
+<h2 id="what-a-dentry-is">What a dentry is, and why 17 million is a lot</h2>
+
+<p>A <strong>dentry</strong> (directory entry) is the kernel's in-memory object linking a path component to an inode — the thing that makes repeated path lookups fast. The kernel caches them aggressively and holds onto unused ones on an LRU list for possible reuse, releasing them only when it needs the memory.</p>
+
+<p>Reading the six numbers against the 3.10 <code>struct dentry_stat_t</code> layout:</p>
+
+<table>
+  <tbody>
+    <tr><th>nr_dentry</th><td>17,603,707</td><td>total dentries allocated (active + unused)</td></tr>
+    <tr><th>nr_unused</th><td>17,252,679</td><td>unused, held on the LRU for reuse</td></tr>
+    <tr><th>age_limit</th><td>45</td><td>reclaim age threshold, seconds</td></tr>
+    <tr><th>want_pages</th><td>0</td><td>no pruning request outstanding right now</td></tr>
+  </tbody>
+</table>
+
+<p>That is <strong>17.6 million dentries, 98% of them unused</strong> — an enormous cache. And here is the mechanism that turns a big cache into a dead machine: on unmount, the kernel must synchronously walk the filesystem's dentry tree and destroy every entry, and in the 3.10 implementation <code>dentry_lru_del()</code> takes a <em>global</em> LRU lock and decrements counters on each removal. A very large tree therefore becomes a very large amount of serialised, lock-heavy work performed in one uninterrupted stretch of kernel time. Long enough, and the soft-lockup watchdog concludes the CPU has hung.</p>
+
+<h2 id="ruling-out-the-obvious-suspect">Ruling out the obvious suspect</h2>
+
+<p>The natural first guess for anything involving huge memory structures is "the machine ran out of RAM." The evidence says no. The memory summary showed <strong>174 GB free of 278 GB</strong>, no swap in use, and only 11% of memory committed. Slab was 25 GB.</p>
+
+<p>This is not a global out-of-memory event — and it actually explains the huge cache rather than contradicting it. With that much free memory, the kernel had little reason to reclaim clean, reusable dentries, so they accumulated unbothered. The <code>want_pages: 0</code> in the snapshot says the same thing: no pruning was being requested, because nothing was under memory pressure. The cache grew precisely <em>because</em> there was no pressure to trim it.</p>
+
+<p>The dump also showed heavy Kubernetes activity — <code>systemd</code> and kubelet tasks blocked during memory-cgroup teardown, other tasks waiting on inode mutexes under the cgroup hierarchy. This is strong context: high churn of containers means high churn of namespaces, mounts, and path lookups, which is exactly what generates millions of dentries. On a busy container host, negative lookups and short-lived mounts alone can produce staggering dentry counts.</p>
+
+<h2 id="the-honest-limitation">The honest limitation</h2>
+
+<p>Here is where the missing <code>vmcore</code> matters, and where a lesser write-up would overclaim.</p>
+
+<p><code>/proc/sys/fs/dentry-state</code> is a <strong>system-wide</strong> counter. It proves the node had 17.6 million dentries. It does <em>not</em> prove which filesystem owned them, and specifically it does not prove that the filesystem <code>umount</code> was destroying was the one holding the bulk of them. To close that gap you would need the live kernel memory: inspect the <code>struct super_block</code> passed to <code>generic_shutdown_super()</code>, read its per-superblock unused-dentry count, and break down the dentry slab by cache. Without the dump, those objects cannot be examined.</p>
+
+<p>So the conclusion is stated at graded confidence:</p>
+
+<table>
+  <thead><tr><th>Finding</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td>Soft-lockup panic occurred during <code>umount</code></td><td><strong>Confirmed</strong> (panic header + trace)</td></tr>
+    <tr><td>The stuck path was dentry destruction</td><td><strong>Confirmed</strong> (call trace)</td></tr>
+    <tr><td>The global dentry cache was enormous</td><td><strong>Confirmed</strong> (17.6M / 98% unused)</td></tr>
+    <tr><td>Global RAM exhaustion caused the panic</td><td><strong>Not supported</strong> (174 GB free)</td></tr>
+    <tr><td>Large dentry teardown was the trigger</td><td><strong>Probable, high confidence</strong></td></tr>
+    <tr><td>The unmounted FS owned those dentries</td><td><strong>Unproven</strong> — needs the vmcore</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Probable root cause:</strong> a very large dentry subtree, combined with synchronous unmount cleanup and contention on the global dcache LRU lock in the old 3.10 kernel, kept CPU 3 in kernel context long enough for the watchdog to declare a soft lockup and panic the system.</p>
+
+<h2 id="fixing-it">Fixing it, and being ready next time</h2>
+
+<p><strong>Restore diagnostic readiness first.</strong> The single biggest problem in this case was that the evidence needed to <em>prove</em> the cause had been lost. Configure kdump to write to durable storage, and — just as important — retain the exact <code>vmlinux</code>, debug symbols, and kernel package for every production kernel build. A dump you cannot match to symbols is a dump you cannot fully read. Test that kdump actually produces a readable dump during a maintenance window, before you need it.</p>
+
+<p><strong>Monitor dentry growth.</strong> Collect <code>nr_dentry</code>, <code>nr_unused</code>, and slab figures over time, and alert on rate of change rather than an absolute threshold — a rapid monotonic climb is far more meaningful than a high steady number on a large-memory host. Correlate with pod create/delete rate and mount count.</p>
+
+<p><strong>Reduce mount and namespace churn.</strong> Investigate repeated pod teardown, orphaned mounts, and failed cgroup cleanups. Before node maintenance or a bulk unmount, drain the node and let the runtime finish cleaning up, so the unmount path is not competing with active churn.</p>
+
+<p><strong>A temporary mitigation, used carefully.</strong> The kernel can reclaim clean, reusable slab objects on demand:</p>
+
+<pre><code>$ sync
+$ echo 2 &gt; /proc/sys/vm/drop_caches
+</code></pre>
+
+<p>This drops reclaimable dentries and inodes. It is a maintenance-window workaround, not a fix, and it should be disabled by default and used only with logging and a baseline-derived threshold. Tuning <code>vm.vfs_cache_pressure</code> upward (say 150–200 for this kind of high-dentry host) makes the kernel reclaim these caches more willingly, but measure metadata latency before and after — it is not a universal setting.</p>
+
+<p><strong>The real fix is the kernel.</strong> A custom 3.10 build is far behind the maintained longterm branches. Migrating to a currently supported, vendor-maintained kernel — with a container and Kubernetes stack tested against it — is the corrective action; the mitigations above only buy time. Canary it against representative pod-churn and mount/unmount workloads, and compare unmount latency and dentry behaviour against the old kernel before rolling out.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>A soft lockup is "stuck in the kernel too long," not necessarily "out of resources."</strong> Here the machine had 174 GB free and still panicked.</li>
+  <li><strong>Caches grow when there is no pressure to trim them.</strong> Plentiful free memory is exactly why 17 million dentries could accumulate.</li>
+  <li><strong>Container churn manufactures dentries.</strong> High pod and mount turnover is a classic source of runaway path-cache growth.</li>
+  <li><strong>Separate confirmed from probable.</strong> A system-wide counter proved the population but not its owner; without the vmcore, the last link stays an inference — and saying so is more useful than pretending otherwise.</li>
+  <li><strong>Protect your evidence.</strong> Retain vmcore, matching symbols, and logs before rebuilding a node. The best analysis is limited by what was preserved.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

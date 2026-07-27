@@ -20,3 +20,17 @@ https://hailongding.github.io/blog/2026/04/10/The-255-CPU-Wall-xAPIC-x2APIC-and-
 https://hailongding.github.io/blog/2026/05/13/Multiple-Public-IPs-on-One-VM-Why-You-Need-Policy-Routing
 https://hailongding.github.io/blog/2026/05/20/Building-a-Self-Hosted-BIND9-DNS-Sandbox-for-Device-Testing
 https://hailongding.github.io/blog/2026/06/03/Anatomy-of-a-Compromised-Cloud-VM
+https://hailongding.github.io/blog/2023/01/24/When-CPU-Usage-Spikes-for-No-Reason-Correctable-Memory-Errors
+https://hailongding.github.io/blog/2023/02/24/A-Game-Server-Crash-Traced-to-an-iptables-Lock-Under-Attack
+https://hailongding.github.io/blog/2023/07/28/A-Kernel-Panic-During-Unmount-Chasing-17-Million-Dentries
+https://hailongding.github.io/blog/2023/09/27/Why-Your-UDP-Throughput-Falls-Short-of-the-Nominal-Bandwidth
+https://hailongding.github.io/blog/2024/03/25/Load-Balancer-Connection-Crossing-When-Two-Clients-Collapse-into-One
+https://hailongding.github.io/blog/2024/05/20/An-Unattended-Kernel-Upgrade-That-Broke-Boot-After-a-Cloud-Migration
+https://hailongding.github.io/blog/2025/04/24/Chasing-a-Clock-That-Jumped-Every-30-Minutes
+https://hailongding.github.io/blog/2025/05/08/When-a-Bare-Metal-Server-Can-No-Longer-Write-An-HBA-Failure
+https://hailongding.github.io/blog/2025/07/29/Out-of-Inodes-Not-Space-A-Filesystem-Killed-by-a-Mail-Loop
+https://hailongding.github.io/blog/2025/08/22/Split-Lock-How-One-Misaligned-Atomic-Operation-Stalls-a-Machine
+https://hailongding.github.io/blog/2025/08/26/The-Password-That-Reset-Itself-Every-Morning
+https://hailongding.github.io/blog/2025/08/28/Why-hwclock-and-date-Disagree-on-a-Virtual-Machine
+https://hailongding.github.io/blog/2026/01/08/A-Disk-That-Looks-Full-But-Isnt-Understanding-Btrfs-Space
+https://hailongding.github.io/blog/2026/02/10/Recovering-a-Missing-LVM-Physical-Volume-from-Metadata-Backups

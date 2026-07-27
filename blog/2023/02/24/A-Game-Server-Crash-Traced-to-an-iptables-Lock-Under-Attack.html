@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: A Game Server Crash Traced to an iptables Lock Under Attack</title>
+    <meta name="description" content="A game server crashed with resources to spare. The crash dump showed it stuck on the iptables lock file, with one IP appearing 4,370 times — a traffic flood turned into a kernel lock storm by the defence meant to stop it.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2023/02/24/A-Game-Server-Crash-Traced-to-an-iptables-Lock-Under-Attack">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>A Game Server Crash Traced to an iptables Lock Under Attack</h1>
+    <p class="post-meta">Posted on February 24, 2023  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="security">security</a>&nbsp; -->
+    security&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="troubleshooting">troubleshooting</a>&nbsp; -->
+    troubleshooting&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A game company's server crashed hard. What made it puzzling was the monitoring: at the moment it went down, none of the usual resource metrics were anywhere near their limits. CPU, memory, network — all comfortably within range. Servers do not normally crash when they have headroom to spare.</p>
+
+<p>Fortunately the machine was configured to capture a crash dump, so instead of guessing, we could open the <code>vmcore</code> and look at exactly what the kernel was doing at the instant it died.</p>
+
+<h2 id="reading-the-crash-dump">Reading the crash dump</h2>
+
+<p>Analysing a kernel crash dump with the <code>crash</code> utility lets you see the state of every task at the moment of the panic — what each one was executing and what it was waiting on. Two findings stood out.</p>
+
+<p><strong>First: the panic occurred while the system was running <code>iptables</code>.</strong> The active task in the panic path was an <code>iptables</code> invocation. That is already a clue — <code>iptables</code> is not something a game server should be running constantly. It is a firewall-configuration tool, invoked to add or change rules.</p>
+
+<p><strong>Second: it was stuck on a file lock.</strong> The task was blocked on <code>/run/xtables.lock</code>. This is the lock file modern <code>iptables</code> uses to serialise access to the kernel's netfilter tables — only one process may modify the rule set at a time, and the lock is how that is enforced.</p>
+
+<p>A process stuck on <code>xtables.lock</code> means many <code>iptables</code> invocations were contending for it simultaneously. Something was trying to change firewall rules far faster than the system could apply them.</p>
+
+<h2 id="the-smoking-gun">The smoking gun: one IP, 4,370 times</h2>
+
+<p>Digging further into the dump, one client IP address appeared <strong>4,370 times</strong> in the moments before the crash. That number is the whole story.</p>
+
+<p>The picture that emerged: the server (or a security script layered on top of it) was reacting to abusive traffic by adding a firewall rule per offending connection. Under a flood from a single source hammering the box, that meant thousands of <code>iptables</code> calls piling up, each one trying to grab <code>xtables.lock</code>, each one waiting behind the others. <code>iptables</code> could not parse and apply rules anywhere near fast enough to keep up, the backlog grew without bound, and the contention eventually took the system down.</p>
+
+<p>In other words, the crash was not caused by the raw volume of attack traffic overwhelming the network. It was caused by the <em>response</em> to that traffic — a rule-per-connection reaction that turned a traffic flood into a lock storm inside the kernel. The defence mechanism was the thing that fell over.</p>
+
+<h2 id="why-iptables-behaves-this-way">Why iptables behaves this way</h2>
+
+<p>The classic <code>iptables</code> model is not built for high-frequency, per-connection rule changes:</p>
+
+<ul>
+  <li><strong>The lock is global.</strong> <code>xtables.lock</code> serialises <em>all</em> rule modifications. Two rule changes cannot happen at once, by design.</li>
+  <li><strong>Each change is expensive.</strong> Under the hood, the legacy <code>iptables</code> path retrieves the entire rule set from the kernel, modifies it, and writes the whole thing back. Cost grows with the number of rules — so the more rules you have added, the slower each new addition becomes.</li>
+  <li><strong>Rule matching is linear.</strong> A packet is tested against rules top to bottom. A chain that has grown to thousands of entries adds latency to every packet, not just to the tool.</li>
+</ul>
+
+<p>Put those together and a rule-per-attacker strategy has quadratic-flavoured pain: as the list grows, both adding rules and evaluating them get slower, right at the moment the system is under the most pressure.</p>
+
+<h2 id="the-right-way-to-handle-this">The right way to handle this</h2>
+
+<p>Blocking bad traffic is correct; doing it with one <code>iptables</code> rule per source is not. Better tools exist for exactly this shape of problem:</p>
+
+<ul>
+  <li><strong>ipset.</strong> Instead of thousands of rules, keep <em>one</em> rule that matches against an <code>ipset</code> — a hash-based set of addresses. Adding or removing an address is O(1) and does not touch the rule chain at all. This alone eliminates the lock storm.</li>
+  <li><strong>nftables.</strong> The modern replacement for <code>iptables</code> supports atomic rule replacement and native sets and maps, avoiding the full get-modify-set cycle of the legacy tool.</li>
+  <li><strong>A dedicated protection layer.</strong> For volumetric attacks, filtering at the host is the wrong place entirely — the packets have already cost you to receive them. A managed DDoS-protection or web-application-firewall service scrubs traffic upstream, before it reaches the instance. That was our recommendation to this customer: put attack mitigation in front of the server rather than trying to have the server defend itself.</li>
+</ul>
+
+<p>The general principle: <strong>the data plane and the control plane should not fight each other.</strong> Reconfiguring the firewall (control plane) on every packet (data plane) couples them together, so a surge in traffic becomes a surge in configuration churn. Keep the reaction cheap — flip a set membership, not a rule set — and the flood stays a network problem instead of becoming a kernel problem.</p>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong>A crash with resources to spare points at contention, not capacity.</strong> Look for locks and serialisation, not saturation.</li>
+  <li><strong>A crash dump turns speculation into evidence.</strong> Enable kernel crash dumps on important machines; the panic task and its wait state told us in minutes what metrics could not.</li>
+  <li><strong>Don't add one firewall rule per attacker.</strong> Legacy <code>iptables</code> serialises on a global lock and rewrites the whole table per change — a flood becomes a lock storm. Use <code>ipset</code> or <code>nftables</code>.</li>
+  <li><strong>Mitigate volumetric attacks upstream.</strong> Scrub traffic before it reaches the host; a server defending itself packet-by-packet is already losing.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>

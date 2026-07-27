@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hailong Ding :: An Unattended Kernel Upgrade That Broke Boot After a Cloud Migration</title>
+    <meta name="description" content="An Ubuntu VM migrated from another cloud booted fine — until an automatic security upgrade regenerated GRUB from a hard-coded partition UUID that only existed on the old platform, and dropped it to an emergency shell.">
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="canonical" href="https://hailongding.github.io/blog/2024/05/20/An-Unattended-Kernel-Upgrade-That-Broke-Boot-After-a-Cloud-Migration">
+    <link rel="alternate" type="application/rss+xml" title="Hailong Ding" href="https://hailongding.github.io/feed.xml" />
+
+    <link href='https://fonts.googleapis.com/css?family=EB+Garamond' rel='stylesheet' type='text/css'>
+</head>
+
+
+  <body>
+  <div class="page">
+    <header class="site-header">
+    <a class="site-title" href="/">Hailong Ding</a>
+    <nav class="site-nav">
+        <a href="#" class="menu-icon menu.open">
+            <svg viewBox="0 0 18 15">
+                <path fill="#424242" d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.031C17.335,0,18,0.665,18,1.484L18,1.484z"/>
+                <path fill="#424242" d="M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0c0-0.82,0.665-1.484,1.484-1.484 h15.031C17.335,6.031,18,6.696,18,7.516L18,7.516z"/>
+                <path fill="#424242" d="M18,13.516C18,14.335,17.335,15,16.516,15H1.484C0.665,15,0,14.335,0,13.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.031C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+        </a>
+        <div class="trigger"><h1>Main Navigation</h1>
+            <ul class="menu">
+
+
+     <li><a href="/blog/" class="page-link">Blog</a>
+
+    </li>
+
+
+     <li><a href="/misc/" class="page-link">Misc</a>
+
+    </li>
+
+</ul>
+
+        </div>
+    </nav>
+</header>
+
+
+    <div class="post">
+    <header class="post-header">
+    <h1>An Unattended Kernel Upgrade That Broke Boot After a Cloud Migration</h1>
+    <p class="post-meta">Posted on May 20, 2024  ()</p>
+
+
+
+
+    <p class="post-meta">Categories:
+
+    <!-- <a href=" | prepend: site.baseurl}}" title="linux">linux</a>&nbsp; -->
+    linux&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="cloud">cloud</a>&nbsp; -->
+    cloud&nbsp;
+    
+    <!-- <a href=" | prepend: site.baseurl}}" title="boot">boot</a>&nbsp; -->
+    boot&nbsp;
+    
+
+    </p>
+
+    </header>
+
+<p>A customer running Ubuntu 22.04 hit an intermittent, alarming failure: every so often the machine would come up after a reboot into a broken state and drop to an emergency shell. It did not happen on every reboot, and nothing the customer did on purpose seemed to trigger it.</p>
+
+<p>The pattern turned out to be: an automatic kernel upgrade, followed by a reboot, followed by a machine that could not find its root filesystem. And the underlying reason was a piece of configuration that had quietly hitchhiked along when the image was migrated from another cloud.</p>
+
+<h2 id="the-symptom">The symptom</h2>
+
+<p>On the failed boots, the serial console showed the kernel loading and then giving up because the disk it was told to mount did not exist:</p>
+
+<pre><code>ALERT!  PARTUUID=895d8984-5441-4c70-b87c-a6b6ebb8c95e does not exist.
+Dropping to a shell!
+</code></pre>
+
+<p>The kernel was looking for a root partition identified by a specific <strong>PARTUUID</strong>, and no partition on this machine had that UUID. So it could not assemble root, and it bailed out to an initramfs shell.</p>
+
+<h2 id="tracing-the-trigger">Tracing the trigger</h2>
+
+<p>Three observations lined up:</p>
+
+<ul>
+  <li>After a failed boot there was a <strong>new kernel</strong> installed that had not been there before — something was upgrading the kernel without anyone asking.</li>
+  <li><code>/boot/grub/grub.cfg</code> had been <strong>modified</strong> — the boot configuration was being regenerated as part of that upgrade.</li>
+  <li><code>/var/log/apt/history.log</code> showed the change had been made by <code>/usr/bin/unattended-upgrade</code>.</li>
+</ul>
+
+<p>So the chain of events was: Ubuntu's <strong>unattended-upgrades</strong> — the package that installs security updates automatically — pulled in a new kernel, which regenerated the GRUB configuration, and on the next reboot the machine tried to boot with a root reference it could not satisfy. The upgrade itself was routine and correct; the problem was what it regenerated the config <em>from</em>.</p>
+
+<h2 id="the-root-cause">The root cause: a hard-coded UUID from another cloud</h2>
+
+<p>This image had been migrated from AWS. On AWS, the image had pinned the root partition to a fixed PARTUUID, via a GRUB drop-in file:</p>
+
+<pre><code>/etc/default/grub.d/40-force-partuuid.cfg
+</code></pre>
+
+<p>That file forces GRUB to use a specific PARTUUID for the root device. It exists because AWS's environment guarantees that particular UUID — it is tied to how their images and volumes are provisioned. It is an AWS-specific assumption baked into the image.</p>
+
+<p>On the new platform, that guarantee does not hold. Here, a disk's UUID is a property of the actual volume attached to the instance, not something fixed by the image. So the disk on this machine had a <em>different</em> PARTUUID than the one hard-coded in <code>40-force-partuuid.cfg</code>.</p>
+
+<p>Here is why it was intermittent rather than immediate: the running <code>grub.cfg</code> from the original image may have been fine, or the machine had booted successfully on whatever config it shipped with. The failure only surfaced when <strong>unattended-upgrades regenerated <code>grub.cfg</code></strong> — because regeneration re-read <code>40-force-partuuid.cfg</code> and wrote the stale, hard-coded PARTUUID into the new boot entry. Until an automatic upgrade fired, nothing rewrote the config, so the machine kept booting. That is why it looked random: the trigger was the upgrade schedule, not anything the customer did.</p>
+
+<h2 id="the-fix">The fix</h2>
+
+<p>Recovery, from the emergency shell or a rescue environment:</p>
+
+<pre><code># find the offending drop-in
+$ grep -rl PARTUUID /etc/default/grub.d/
+/etc/default/grub.d/40-force-partuuid.cfg
+
+# remove or neutralise the AWS-specific pin
+$ sudo rm /etc/default/grub.d/40-force-partuuid.cfg
+
+# regenerate the boot config without the hard-coded UUID
+$ sudo update-grub
+</code></pre>
+
+<p>With the forced-PARTUUID drop-in gone, <code>update-grub</code> generates a boot entry that resolves the root device normally, and the machine boots and stays bootable across future upgrades. Rebooting out of rescue mode confirmed it.</p>
+
+<p>If you would rather keep the pin than remove it — for instance if something else depends on it — the alternative is to correct it: find the disk's actual identifier (<code>blkid /dev/vda1</code>) and update the file to match, rather than the value carried over from AWS.</p>
+
+<h2 id="the-broader-lesson">The broader lesson: images carry hidden assumptions</h2>
+
+<p>The interesting part of this case is not the one broken file — it is <em>why</em> it was there. A machine image is not a neutral bag of bits; it encodes assumptions about the environment it was built for. Device naming, UUID stability, network interface names, cloud-init datasource, metadata endpoints, DHCP behaviour — an image built on one platform can hard-code any of these, and they may be silently wrong on another.</p>
+
+<p>What made this one nasty is the delayed detonation. The bad assumption sat dormant through the migration and the first boots, and only fired when an <em>unrelated</em> automated process (a security upgrade) happened to regenerate the file that contained it. Cause and effect were separated by days and by an event nobody connected to the disk.</p>
+
+<p>A few habits that catch this class of problem:</p>
+
+<ul>
+  <li><strong>After migrating an image between clouds, audit the boot path.</strong> Check <code>/etc/default/grub</code> and <code>/etc/default/grub.d/</code>, <code>/etc/fstab</code>, and the initramfs for hard-coded device IDs, and regenerate <code>grub.cfg</code> yourself so you find out immediately rather than at the next automatic upgrade.</li>
+  <li><strong>Prefer stable-but-portable references.</strong> Filesystem UUID or label in <code>fstab</code> is generally more portable than a partition-table UUID pinned by a cloud-specific drop-in.</li>
+  <li><strong>Know what unattended-upgrades will do.</strong> Automatic security updates are good policy, but on a migrated image they are also the thing most likely to regenerate boot config from stale inputs. Test a kernel upgrade and reboot deliberately after a migration, rather than letting the first one happen unattended in production.</li>
+</ul>
+
+<h2 id="takeaways">Takeaways</h2>
+
+<ul>
+  <li><strong><code>PARTUUID ... does not exist</code> at boot means the boot config references a disk identifier that isn't present</strong> — very often a value carried over from a different environment.</li>
+  <li><strong>Migrated images carry environment-specific assumptions.</strong> A UUID that a previous cloud guaranteed is not guaranteed elsewhere.</li>
+  <li><strong>An unattended upgrade can expose a dormant fault.</strong> The bug was latent until something regenerated <code>grub.cfg</code>; that is why it looked intermittent.</li>
+  <li><strong>Audit the boot path right after a cross-cloud migration</strong> — GRUB drop-ins, <code>fstab</code>, initramfs — and force a config regeneration and reboot on your own schedule.</li>
+</ul>
+
+
+
+</div>
+
+
+    <footer class="site-footer">
+    Hailong's homepage<br />
+
+    Using <a href="http://jekyllrb.com/">Jekyll</a>
+
+
+</footer>
+
+
+
+
+    </div>
+  </body>
+
+</html>
