@@ -288,9 +288,7 @@ ul.listing li.listing-seperator {
   font-size: 1.17em; }
 
 ul.listing li.listing-item time {
-  color: #888;
-  text-transform: uppercase;
-  padding-right: 0.5em; }
+  display: none; }
 
 ul.listing li.listing-item a {
   color: #b6321c; }
