@@ -61,15 +61,17 @@
     </a>
 </div>
 
-<p>I am a Senior Site Reliability Engineer working on public cloud infrastructure in Singapore, with more than twenty years in systems and software engineering. For the past five years I have been an escalation point for the infrastructure faults that front-line support cannot resolve — across compute, block storage, networking, GPU and bare-metal platforms — with around two thousand production cases handled to date.</p>
+<p>I am a Senior Site Reliability Engineer working on public cloud infrastructure in Singapore, with more than twenty years in systems and software engineering. My job is to keep a large cloud platform running across regions on several continents, and to resolve the problems its customers run into anywhere in the world. I sit on the third line of support: a case reaches me when the first and second lines cannot resolve it. About two thousand production cases have reached me over the past five years.</p>
 
-<p>Most of that work is diagnosis: kernel crashes, kdump and OOM analysis, unbootable instances and corrupted file systems, latency and packet loss, DNS and routing faults, and the occasional compromised host. I also work with solution architects across regions on design validation, capacity planning and disaster recovery.</p>
+<p>The cases arrive without a reproduction and often without an obvious starting point, and each platform fails in its own way. On compute it is kernel panics read out of a kdump, OOM kills and instances that will not boot. Storage brings corrupted file systems, lost partition tables and volumes that have to be rebuilt from metadata backups. The network side is latency, packet loss, and DNS or routing faults. GPU nodes add Xid errors, ECC failures and drivers that take a host down without warning, and bare metal adds failing HBAs and disks. Now and then a case turns out not to be a fault at all but a compromised host. At this scale, failures a single machine might never see are ordinary work, and the job comes down to finding the mechanism behind the symptom and getting the system back into service.</p>
+
+<p>I also work closely with solution architects across global regions, helping them open new markets. Some of their customers run across more than one cloud. I help design those architectures so the business stays up, and I validate the parts that carry the most risk. That means load balancing between clouds, capacity planning, and recovery when a component fails. Others move their whole business onto our platform, and I help them work through the problems that surface along the way.</p>
 
 <p>Before moving into cloud infrastructure I spent nine years in embedded software development — boot loaders, the Linux kernel and device drivers, file systems, embedded databases and network communication — leading a video processing platform team for traffic management and surveillance systems, and later worked on fare system gate devices deployed across the Singapore MRT network. I hold a Master’s degree in Computer Science from Southeast University.</p>
 
 <h2 id="writing">Writing</h2>
 
-<p>I write up problems worth remembering — Linux kernel behaviour, filesystem and storage recovery, networking, and cloud infrastructure troubleshooting. Recent posts include <a href="/blog/2026/06/03/Anatomy-of-a-Compromised-Cloud-VM">Anatomy of a Compromised Cloud VM</a>, <a href="/blog/2026/04/10/The-255-CPU-Wall-xAPIC-x2APIC-and-Old-Kernels">The 255-CPU Wall: xAPIC, x2APIC and Old Kernels</a>, and <a href="/blog/2026/04/07/Recovering-a-Disk-After-sgdisk-Was-Run-on-the-Wrong-Device">Recovering a Disk After sgdisk Was Run on the Wrong Device</a>.</p>
+<p>I write up some of the technical problems I run into at work, usually the ones that took a while to understand and seemed worth remembering.</p>
 
 <p>Everything is on the <a href="/blog/">blog</a>.</p>
 
